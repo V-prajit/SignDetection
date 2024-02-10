@@ -2,8 +2,47 @@ import sys
 from PyQt6.QtWidgets import QApplication, QWidget, QPushButton, QFileDialog, QVBoxLayout, QGraphicsView, QGraphicsScene, QGraphicsRectItem, QStackedWidget, QHBoxLayout, QFrame
 from PyQt6.QtMultimedia import QMediaPlayer
 from PyQt6.QtMultimediaWidgets import QVideoWidget
-from PyQt6.QtCore import QUrl, QRectF, Qt, QEvent
-from PyQt6.QtGui import QMouseEvent, QPen, QColor, QBrush
+from PyQt6.QtCore import QUrl, QRectF, Qt, QEvent, QPoint, QRect
+from PyQt6.QtGui import QMouseEvent, QPen, QColor, QBrush, QPainter
+
+class DrawingVideoWidget(QVideoWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setMouseTracking(True)  # Enable mouse tracking
+        self.drawing = False
+        self.rectangles = []  # List to store rectangles
+        self.startPoint = QPoint()
+        self.endPoint = QPoint()
+        self.currentRect = QRect()
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.drawing = True
+            self.startPoint = event.pos()
+            self.endPoint = self.startPoint
+            self.currentRect = QRect(self.startPoint, self.endPoint)
+            self.update()  # Trigger a repaint
+
+    def mouseMoveEvent(self, event):
+        if self.drawing:
+            self.endPoint = event.pos()
+            self.currentRect = QRect(self.startPoint, self.endPoint)
+            self.update()  # Trigger a repaint
+
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton and self.drawing:
+            self.drawing = False
+            self.rectangles.append(self.currentRect)
+            self.update()  # Trigger a repaint
+
+    def paintEvent(self, event):
+        super().paintEvent(event)  # Call the parent class paintEvent
+        painter = QPainter(self)
+        painter.setPen(QPen(QColor(255, 0, 0), 3))
+        for rect in self.rectangles:
+            painter.drawRect(rect)
+        if self.drawing:
+            painter.drawRect(self.currentRect)
 
 class CustomGraphicsView(QGraphicsView):
     def __init__(self, scene, parent = None):
@@ -64,7 +103,7 @@ class VideoPlayer (QWidget):
         self.layout = QVBoxLayout()
 
         self.videoLayout = QHBoxLayout()
-        self.videoWidget = QVideoWidget()
+        self.videoWidget = DrawingVideoWidget()
 
         self.stackWidget = QStackedWidget()
         self.stackWidget.addWidget(self.videoWidget)
