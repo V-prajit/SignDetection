@@ -35,7 +35,7 @@ class InteractiveVideoWidget(QVideoWidget):
             painter.setPen(QPen(Qt.GlobalColor.red, 2, Qt.PenStyle.SolidLine))
             rect = QRect(self.startPoint, self.endPoint)
             painter.drawRect(rect)
-    
+
 
 
 class VideoEditor(QMainWindow):
@@ -139,4 +139,3 @@ if __name__ == '__main__':
     ex = VideoEditor()
     ex.show()
     sys.exit(app.exec())
-
