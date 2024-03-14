@@ -1,9 +1,10 @@
 import sys 
-from PyQt6.QtWidgets import QApplication, QMainWindow, QPushButton, QFileDialog, QLineEdit, QLabel, QVBoxLayout, QSlider, QWidget
+from PyQt6.QtWidgets import QApplication, QMainWindow, QPushButton, QFileDialog, QLineEdit, QLabel, QVBoxLayout, QSlider, QWidget, QCheckBox
 from PyQt6.QtMultimedia import QMediaPlayer
 from PyQt6.QtMultimediaWidgets import QVideoWidget
 from PyQt6.QtCore import Qt, QUrl, QRect, QPoint
 from PyQt6.QtGui import QPainter, QPen
+from VideoTrimAndCropping import GetValues
 
 class InteractiveVideoWidget(QVideoWidget):
     def __init__(self, parent = None):
@@ -26,7 +27,6 @@ class InteractiveVideoWidget(QVideoWidget):
         self.isDrawing = False
         self.endPoint = event.position().toPoint()
         self.update()
-        print(f"Crop Rectangle: {self.startPoint}, {self.endPoint}")
 
     def paintEvent(self, event):
         super().paintEvent(event)
@@ -47,12 +47,14 @@ class VideoEditor(QMainWindow):
         self.videoLoaded = False
         self.startTime = 0
         self.endTime = 0
+        self.videoWidget.setMinimumSize(1280,720)
+        self.isOneHanded = False
 
     def initUI(self):
         self.setWindowTitle(self.title)
         self.setGeometry(100,100, 1280, 720)
 
-        videoWidget = InteractiveVideoWidget()
+        self.videoWidget = InteractiveVideoWidget()
 
         self.loadPlayButton = QPushButton('Load Video', self)
         self.loadPlayButton.clicked.connect(self.loadOrPlayVideo)
@@ -71,6 +73,9 @@ class VideoEditor(QMainWindow):
         self.trimButton.clicked.connect(self.trimVideo)
         self.trimButton.setEnabled(False)
 
+        self.oneHandedCheckBox = QCheckBox("One-Handed Video", self)
+        self.oneHandedCheckBox.stateChanged.connect(self.oneHandedCheckChanged)
+
         self.mediaPlayer.durationChanged.connect(self.durationChanged)
         self.mediaPlayer.positionChanged.connect(self.positionChanged)
 
@@ -79,14 +84,15 @@ class VideoEditor(QMainWindow):
         layout = QVBoxLayout()
         widget.setLayout(layout)
 
-        layout.addWidget(videoWidget)
+        layout.addWidget(self.videoWidget)
         layout.addWidget(self.slider)
         layout.addWidget(self.loadPlayButton)
         layout.addWidget(self.setStartButton)
         layout.addWidget(self.setEndButton)
         layout.addWidget(self.trimButton)
+        layout.addWidget(self.oneHandedCheckBox)
 
-        self.mediaPlayer.setVideoOutput(videoWidget)
+        self.mediaPlayer.setVideoOutput(self.videoWidget)
 
         self.fileName = None
 
@@ -103,6 +109,7 @@ class VideoEditor(QMainWindow):
             # Load video if no video is loaded
             fileName, _ = QFileDialog.getOpenFileName(self, "Open Video File")
             if fileName:
+                self.fileName = fileName
                 self.mediaPlayer.setSource(QUrl.fromLocalFile(fileName))
                 self.videoLoaded = True
                 self.loadPlayButton.setText('Play')
@@ -115,15 +122,17 @@ class VideoEditor(QMainWindow):
     def setStartTime(self):
         self.startTime = self.mediaPlayer.position()
         self.trimButton.setEnabled(True)  # Enable trim button after setting start time
-        print(f"Start Time Set: {self.startTime} ms")
 
     def setEndTime(self):
         self.endTime = self.mediaPlayer.position()
         self.trimButton.setEnabled(True)  # Ensure trim button is enabled
-        print(f"End Time Set: {self.endTime} ms")
+
+    def oneHandedCheckChanged(self, state):
+        self.isOneHanded = not self.isOneHanded
+        #print("Checkbox changed:", self.isOneHanded)
 
     def trimVideo(self):
-        print(f"Trimming video from {self.startTime} ms to {self.endTime} ms")
+        GetValues(self.startTime, self.endTime, self.videoWidget.startPoint, self.videoWidget.endPoint, self.fileName, self.isOneHanded)
 
     def setPosition(self, position):
         self.mediaPlayer.setPosition(position)
@@ -133,6 +142,8 @@ class VideoEditor(QMainWindow):
     
     def positionChanged(self, position):
         self.slider.setValue(position)
+
+
 
 if __name__ == '__main__':
     app = QApplication(sys.argv)
