@@ -2,3 +2,5 @@ venv/
 *.pdf
 *.mp4
 *.pyc
+*.mov
+*.mpg

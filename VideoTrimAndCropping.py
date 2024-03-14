@@ -1,11 +1,12 @@
 import ffmpeg
 import os
+from faceDetection import detect_face
 
 def GetValues(startTime, endTime, startPoint, endPoint, fileName, isOneHanded):
-    print(f"The time stamps are {startTime} and {endTime}")
-    print(f"The coordinates are {startPoint} and {endPoint}")
-    print(fileName)
-    print(isOneHanded)
+    # print(f"The time stamps are {startTime} and {endTime}")
+    # print(f"The coordinates are {startPoint} and {endPoint}")
+    # print(fileName)
+    #print(isOneHanded)
     
     # Convert startTime and endTime from milliseconds to seconds
     start_seconds = startTime / 1000.0
@@ -36,6 +37,9 @@ def GetValues(startTime, endTime, startPoint, endPoint, fileName, isOneHanded):
             .run()
         )
         print(f"Processed video saved as: {output_fileName}")
+        origin, scaling_factor = detect_face(output_fileName)
+        print(origin, scaling_factor)
     except ffmpeg.Error as e:
         print("FFmpeg error:", e.stderr.decode())
         print(f"Failed to process video: {fileName}")
+
