@@ -31,13 +31,14 @@ def detect_face(videoDir):
         face = faces[0]
 
         x, y, w, h = face.left(), face.top(), face.width(), face.height()
+        
         center_x, center_y = x+w/2, y+h/2
 
         diagonal_length = np.sqrt(w**2+h**2)
 
         scaling_factor = 1/diagonal_length
 
-        return (center_x, center_y), scaling_factor
+        return (center_x, center_y), scaling_factor, videoDir
     else:
         print("No face detected.")
         return None, None

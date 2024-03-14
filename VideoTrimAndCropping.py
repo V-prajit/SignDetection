@@ -1,6 +1,9 @@
+#Main BackEnd File
+
 import ffmpeg
 import os
 from faceDetection import detect_face
+from HandCoordinates import HandCoordinates
 
 def GetValues(startTime, endTime, startPoint, endPoint, fileName, isOneHanded):
     # print(f"The time stamps are {startTime} and {endTime}")
@@ -37,8 +40,9 @@ def GetValues(startTime, endTime, startPoint, endPoint, fileName, isOneHanded):
             .run()
         )
         print(f"Processed video saved as: {output_fileName}")
-        origin, scaling_factor = detect_face(output_fileName)
+        origin, scaling_factor, videoDir = detect_face(output_fileName)
         print(origin, scaling_factor)
+        HandCoordinates(videoDir, origin, scaling_factor, isOneHanded)
     except ffmpeg.Error as e:
         print("FFmpeg error:", e.stderr.decode())
         print(f"Failed to process video: {fileName}")

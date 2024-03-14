@@ -1,3 +1,5 @@
+#Main Frontend File
+
 import sys 
 from PyQt6.QtWidgets import QApplication, QMainWindow, QPushButton, QFileDialog, QLineEdit, QLabel, QVBoxLayout, QSlider, QWidget, QCheckBox
 from PyQt6.QtMultimedia import QMediaPlayer
