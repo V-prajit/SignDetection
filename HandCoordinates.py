@@ -4,7 +4,7 @@ import numpy as np
 
 def HandCoordinates(videoDir, origin, scaling_factor, isOneHanded):
 
-    mp_hands = mp.solutions.hands.Hands(static_image_mode = False,
+    mp_hands = mp.solutions.hands.Hands(static_image_mode = True,
                                         max_num_hands = 2,
                                         min_detection_confidence = 0.5,
                                         min_tracking_confidence = 0.5)
@@ -30,7 +30,7 @@ def HandCoordinates(videoDir, origin, scaling_factor, isOneHanded):
             for hand_idx, hand_landmarks in enumerate(results.multi_hand_landmarks):
 
                 cx = np.mean([lm.x for lm in hand_landmarks.landmark]) * frame.shape[1]
-                cy = np.mean([lm.y for lm in hand_landmarks.landmark]) * frame.shape[1]
+                cy = np.mean([lm.y for lm in hand_landmarks.landmark]) * frame.shape[0]
 
                 norm_cx = (cx - origin[0]) * scaling_factor
                 norm_cy = (cy - origin[1]) * scaling_factor
@@ -45,7 +45,7 @@ def HandCoordinates(videoDir, origin, scaling_factor, isOneHanded):
         if isOneHanded:
             centroids_nondom.append((np.nan, np.nan))
         else:
-            centroids_nondom.append((frame_centroids_nondom if frame_cetroids_nondom else (np.nan, np,nan)))
+            centroids_nondom.append((frame_centroids_nondom if frame_centroids_nondom else (np.nan, np.nan)))
     
     centroids_dom_arr = np.array(centroids_dom)
     centroids_nondom_arr = np.array(centroids_nondom)
@@ -53,5 +53,6 @@ def HandCoordinates(videoDir, origin, scaling_factor, isOneHanded):
     cap.release()
     mp_hands.close()
 
-    return centroids_dom_arr, centroids_nondom_arr
-            
+    print( centroids_dom_arr, centroids_nondom_arr)
+    return centroids_dom_arr, centroids_nondom_arr, origin, scaling_factor
+    
