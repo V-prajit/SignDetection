@@ -5,6 +5,7 @@ import os
 from faceDetection import detect_face
 from HandCoordinates import HandCoordinates
 import numpy as np
+from LinearInterpolation import InterpolateAndResample 
 
 def GetValues(startTime, endTime, startPoint, endPoint, fileName, isOneHanded):
     print(f"The time stamps are {startTime} and {endTime}")
@@ -44,7 +45,15 @@ def GetValues(startTime, endTime, startPoint, endPoint, fileName, isOneHanded):
         print(f"Processed video saved as: {output_fileName}")
         origin, scaling_factor, videoDir = detect_face(output_fileName)
         print(origin, scaling_factor)
-        HandCoordinates(videoDir, origin, scaling_factor, isOneHanded)
+        #Get the HandCoordinates Of The Video
+        centroids_dom_arr, centroids_nondom_arr, origin, scaling_facto = HandCoordinates(videoDir, origin, scaling_factor, isOneHanded)
+        #Linearly interpolate the data
+        Interpolated_Dominant_Hand = InterpolateAndResample(centroids_dom_arr)
+        Interpolated_nonDominant_Hand = InterpolateAndResample(centroids_nondom_arr)
+        print("Resampled Dominant Hand Data:")
+        print(Interpolated_Dominant_Hand)
+        print("Resampled Non-Dominant Hand Data:")
+        print(Interpolated_nonDominant_Hand)
 
     except ffmpeg.Error as e:
         print("FFmpeg error:", e.stderr.decode())
