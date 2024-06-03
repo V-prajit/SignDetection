@@ -5,7 +5,7 @@ from PyQt6.QtWidgets import QApplication, QMainWindow, QPushButton, QFileDialog,
 from PyQt6.QtMultimedia import QMediaPlayer
 from PyQt6.QtMultimediaWidgets import QVideoWidget
 from PyQt6.QtCore import Qt, QUrl, QRect, QPoint
-from PyQt6.QtGui import QPainter, QPen
+from PyQt6.QtGui import QPainter, QPen, QResizeEvent
 from VideoTrimAndCropping import GetValues
 
 class InteractiveVideoWidget(QVideoWidget):
@@ -14,6 +14,11 @@ class InteractiveVideoWidget(QVideoWidget):
         self.startPoint = QPoint()
         self.endPoint = QPoint()
         self.isDrawing = False
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self.update()
+
     def mousePressEvent(self, event):
         self.startPoint = event.position().toPoint()
         self.endPoint = self.startPoint

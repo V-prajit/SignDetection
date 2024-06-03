@@ -4,3 +4,4 @@ venv/
 *.pyc
 *.mov
 *.mpg
+/vid_reader 3
