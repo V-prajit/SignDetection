@@ -2,6 +2,10 @@ import cv2
 import mediapipe as mp
 import numpy as np
 
+
+#does this mean we want to have the directional information of the vectors as well or do we only want the unit vecotr part of it
+
+
 def HandCoordinates(videoDir, origin, scaling_factor, isOneHanded):
 
     mp_hands = mp.solutions.hands.Hands(static_image_mode = True,
@@ -13,6 +17,7 @@ def HandCoordinates(videoDir, origin, scaling_factor, isOneHanded):
 
     centroids_dom = []
     centroids_nondom = []
+    l_delta = []
 
     while cap.isOpened():
         ret, frame = cap.read()
@@ -44,15 +49,24 @@ def HandCoordinates(videoDir, origin, scaling_factor, isOneHanded):
 
         if isOneHanded:
             centroids_nondom.append((np.nan, np.nan))
+            l_delta.append((np.nan, np.nan))
         else:
             centroids_nondom.append((frame_centroids_nondom if frame_centroids_nondom else (np.nan, np.nan)))
-    
+
+            if frame_centroids_dom and frame_centroids_nondom:
+                l_delta.append((frame_centroids_dom[0] - frame_centroids_nondom[0], frame_centroids_dom[1] - frame_centroids_nondom[1]))
+            else:
+                l_delta.append((np.nan, np.nan))
+
+
     centroids_dom_arr = np.array(centroids_dom)
-    centroids_nondom_arr = np.array(centroids_nondom)
+    centroids_nondom_arr = np.array(centroids_nondom) if not isOneHanded else np.full_like(centroids_dom, np.nan)
+    l_delta_arr = np.array(l_delta) if not isOneHanded else np.full_like(centroids_dom_arr, np.nan)
+
 
     cap.release()
     mp_hands.close()
 
-    print( centroids_dom_arr, centroids_nondom_arr)
-    return centroids_dom_arr, centroids_nondom_arr, origin, scaling_factor
+    print( centroids_dom_arr, centroids_nondom_arr, l_delta_arr)
+    return centroids_dom_arr, centroids_nondom_arr, origin, l_delta_arr
     
