@@ -6,3 +6,6 @@ venv/
 *.mpg
 /vid_reader 3
 random
+*.class
+*.json
+*.txt

@@ -2,6 +2,8 @@ import cv2
 import numpy as np
 import dlib
 
+
+
 def extractFirstFrame(videoDir):
     cap = cv2.VideoCapture(videoDir)
 
@@ -41,4 +43,4 @@ def detect_face(videoDir):
         return (center_x, center_y), scaling_factor, videoDir
     else:
         print("No face detected.")
-        return None, None
+        return (100, 100), 0.01, videoDir

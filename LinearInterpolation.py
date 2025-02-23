@@ -14,7 +14,6 @@ def InterpolateAndResample(data, target_size = 20):
     valid_data = data[~nan_data]
 
     if len(valid_indices) == 1:
-        # Only one valid data point, repeat it
         return np.tile(valid_data, (target_size, 1))
 
     new_indices = np.linspace(valid_indices[0], valid_indices[-1], num=target_size)
