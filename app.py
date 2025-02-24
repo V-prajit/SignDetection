@@ -1,50 +1,89 @@
-import sys 
+import sys
 from PyQt6.QtWidgets import (
-    QApplication, QMainWindow, QPushButton, QFileDialog, 
-    QVBoxLayout, QSlider, QWidget, QCheckBox, QListWidget, 
-    QLabel, QStackedWidget
+    QApplication, QMainWindow, QPushButton, QFileDialog,
+    QVBoxLayout, QSlider, QWidget, QCheckBox, QListWidget,
+    QLabel, QStackedWidget, QGraphicsScene, QGraphicsView
 )
 from PyQt6.QtMultimedia import QMediaPlayer
-from PyQt6.QtMultimediaWidgets import QVideoWidget
-from PyQt6.QtCore import Qt, QUrl, QRect, QPoint
-from PyQt6.QtGui import QPainter, QPen
+from PyQt6.QtMultimediaWidgets import QGraphicsVideoItem
+from PyQt6.QtCore import Qt, QUrl, QRectF, QPointF
+from PyQt6.QtGui import QPen, QColor
 from VideoTrimAndCropping import GetValues
 from database_manager import SignDatabase
 
-class InteractiveVideoWidget(QVideoWidget):
-    def __init__(self, parent = None):
+class VideoGraphicsView(QGraphicsView):
+    """
+    Custom graphics view that handles video playback and rectangle drawing.
+    Uses QGraphicsScene for proper layering of video and overlay graphics.
+    """
+    def __init__(self, parent=None):
         super().__init__(parent)
-        self.startPoint = QPoint()
-        self.endPoint = QPoint()
+        # Create and set up the graphics scene
+        self.scene = QGraphicsScene(self)
+        self.setScene(self.scene)
+        
+        # Create video item for playback
+        self.video_item = QGraphicsVideoItem()
+        self.scene.addItem(self.video_item)
+        
+        # Initialize drawing variables
+        self.startPoint = None
+        self.currentRect = None
         self.isDrawing = False
-
+        
+        # Set scene size to match video dimensions
+        self.scene.setSceneRect(QRectF(0, 0, 640, 480))
+        
+        # Configure view properties
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.setViewportUpdateMode(QGraphicsView.ViewportUpdateMode.FullViewportUpdate)
+        
     def resizeEvent(self, event):
+        """Handle resize events to maintain proper video scaling"""
         super().resizeEvent(event)
-        self.update()
+        # Fit the view to the scene contents
+        self.fitInView(self.scene.sceneRect(), Qt.AspectRatioMode.KeepAspectRatio)
+        # Update video item size
+        self.video_item.setSize(self.scene.sceneRect().size())
 
     def mousePressEvent(self, event):
-        self.startPoint = event.position().toPoint()
-        self.endPoint = self.startPoint
+        """Handle mouse press to start drawing rectangle"""
+        # Convert mouse coordinates to scene coordinates
+        self.startPoint = self.mapToScene(event.pos())
         self.isDrawing = True
-        self.update()
+        # Create initial rectangle
+        if self.currentRect:
+            self.scene.removeItem(self.currentRect)
+        self.currentRect = self.scene.addRect(
+            QRectF(self.startPoint, self.startPoint),
+            QPen(QColor(255, 0, 0), 2)
+        )
 
     def mouseMoveEvent(self, event):
-        if self.isDrawing:
-            self.endPoint = event.position().toPoint()
-            self.update()
+        """Handle mouse movement to update rectangle size"""
+        if self.isDrawing and self.currentRect:
+            # Update rectangle size based on current mouse position
+            current_point = self.mapToScene(event.pos())
+            rect = QRectF(self.startPoint, current_point).normalized()
+            self.currentRect.setRect(rect)
 
     def mouseReleaseEvent(self, event):
+        """Handle mouse release to finish drawing rectangle"""
         self.isDrawing = False
-        self.endPoint = event.position().toPoint()
-        self.update()
+        # Store final rectangle coordinates
+        if self.currentRect:
+            self.endPoint = self.mapToScene(event.pos())
 
-    def paintEvent(self, event):
-        super().paintEvent(event)
-        if not self.startPoint.isNull() and not self.endPoint.isNull():
-            painter = QPainter(self)
-            painter.setPen(QPen(Qt.GlobalColor.red, 2, Qt.PenStyle.SolidLine))
-            rect = QRect(self.startPoint, self.endPoint)
-            painter.drawRect(rect)
+    def get_selection_points(self):
+        """Return the rectangle selection points in view coordinates"""
+        if self.currentRect:
+            rect = self.currentRect.rect()
+            # Convert scene coordinates to view coordinates
+            start = self.mapFromScene(rect.topLeft())
+            end = self.mapFromScene(rect.bottomRight())
+            return start, end
+        return None, None
 
 class VideoEditor(QMainWindow):
     def __init__(self):
@@ -56,13 +95,16 @@ class VideoEditor(QMainWindow):
         self.endTime = 0
         self.isOneHanded = False
         
+        # Set up the main window
         self.central_widget = QWidget()
         self.setCentralWidget(self.central_widget)
         self.main_layout = QVBoxLayout(self.central_widget)
         
+        # Create stacked widget for multiple pages
         self.stacked_widget = QStackedWidget()
         self.main_layout.addWidget(self.stacked_widget)
         
+        # Create pages
         self.video_page = QWidget()
         self.results_page = QWidget()
         
@@ -74,48 +116,57 @@ class VideoEditor(QMainWindow):
         
         self.sign_db = SignDatabase()
         
+        # Configure window
         self.setWindowTitle(self.title)
-        self.setGeometry(100,100, 1280, 720)
+        self.setGeometry(100, 100, 1280, 720)
 
     def setup_video_page(self):
+        """Set up the video playback and control page"""
         layout = QVBoxLayout(self.video_page)
         
-        self.videoWidget = InteractiveVideoWidget()
+        # Create and add video view
+        self.videoWidget = VideoGraphicsView()
         layout.addWidget(self.videoWidget)
-
+        
+        # Set up media player
+        self.mediaPlayer.setVideoOutput(self.videoWidget.video_item)
+        
+        # Create and add controls
         self.slider = QSlider(Qt.Orientation.Horizontal)
-        self.slider.setRange(0,0)
+        self.slider.setRange(0, 0)
         self.slider.sliderMoved.connect(self.setPosition)
         layout.addWidget(self.slider)
-
+        
+        # Add buttons
         self.loadPlayButton = QPushButton('Load Video')
         self.loadPlayButton.clicked.connect(self.loadOrPlayVideo)
         layout.addWidget(self.loadPlayButton)
-
+        
         self.setStartButton = QPushButton('Set Start Time')
         self.setStartButton.clicked.connect(self.setStartTime)
         layout.addWidget(self.setStartButton)
-
+        
         self.setEndButton = QPushButton('Set End Time')
         self.setEndButton.clicked.connect(self.setEndTime)
         layout.addWidget(self.setEndButton)
-
+        
         self.trimButton = QPushButton('Process Video')
         self.trimButton.clicked.connect(self.trimVideo)
         self.trimButton.setEnabled(False)
         layout.addWidget(self.trimButton)
-
+        
         self.oneHandedCheckBox = QCheckBox("One-Handed Video")
         self.oneHandedCheckBox.stateChanged.connect(self.oneHandedCheckChanged)
         layout.addWidget(self.oneHandedCheckBox)
-
+        
+        # Connect media player signals
         self.mediaPlayer.durationChanged.connect(self.durationChanged)
         self.mediaPlayer.positionChanged.connect(self.positionChanged)
-        self.mediaPlayer.setVideoOutput(self.videoWidget)
-
+        
         self.fileName = None
 
     def setup_results_page(self):
+        """Set up the results display page"""
         layout = QVBoxLayout(self.results_page)
         
         title_label = QLabel("Matching Results")
@@ -170,28 +221,30 @@ class VideoEditor(QMainWindow):
 
     def trimVideo(self):
         try:
-            matches, origin, scaling_factor, features = GetValues(
-                self.startTime, 
-                self.endTime, 
-                self.videoWidget.startPoint, 
-                self.videoWidget.endPoint, 
-                self.fileName, 
-                self.isOneHanded
-            )
-            
-            self.resultsList.clear()
-            
-            if matches:
-                for i, (sign_name, distance) in enumerate(matches, 1):
-                    similarity = 1 / (1 + distance)
-                    self.resultsList.addItem(
-                        f"{i}. {sign_name} (Similarity: {similarity:.2})"
-                    )
-            else:
-                self.resultsList.addItem("No matching signs found")
-            
-            self.show_results_page()
+            start_point, end_point = self.videoWidget.get_selection_points()
+            if start_point and end_point:
+                matches, origin, scaling_factor, features = GetValues(
+                    self.startTime,
+                    self.endTime,
+                    start_point,
+                    end_point,
+                    self.fileName,
+                    self.isOneHanded
+                )
                 
+                self.resultsList.clear()
+                
+                if matches:
+                    for i, (sign_name, distance) in enumerate(matches, 1):
+                        similarity = 1 / (1 + distance)
+                        self.resultsList.addItem(
+                            f"{i}. {sign_name} (Similarity: {similarity:.2f})"
+                        )
+                else:
+                    self.resultsList.addItem("No matching signs found")
+                
+                self.show_results_page()
+                    
         except Exception as e:
             print(f"Error processing video: {str(e)}")
             import traceback

@@ -9,3 +9,4 @@ random
 *.class
 *.json
 *.txt
+.DS_Store
