@@ -12,47 +12,32 @@ from VideoTrimAndCropping import GetValues
 from database_manager import SignDatabase
 
 class VideoGraphicsView(QGraphicsView):
-    """
-    Custom graphics view that handles video playback and rectangle drawing.
-    Uses QGraphicsScene for proper layering of video and overlay graphics.
-    """
     def __init__(self, parent=None):
         super().__init__(parent)
-        # Create and set up the graphics scene
         self.scene = QGraphicsScene(self)
         self.setScene(self.scene)
         
-        # Create video item for playback
         self.video_item = QGraphicsVideoItem()
         self.scene.addItem(self.video_item)
         
-        # Initialize drawing variables
         self.startPoint = None
         self.currentRect = None
         self.isDrawing = False
-        
-        # Set scene size to match video dimensions
+
         self.scene.setSceneRect(QRectF(0, 0, 640, 480))
         
-        # Configure view properties
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.setViewportUpdateMode(QGraphicsView.ViewportUpdateMode.FullViewportUpdate)
         
     def resizeEvent(self, event):
-        """Handle resize events to maintain proper video scaling"""
         super().resizeEvent(event)
-        # Fit the view to the scene contents
         self.fitInView(self.scene.sceneRect(), Qt.AspectRatioMode.KeepAspectRatio)
-        # Update video item size
         self.video_item.setSize(self.scene.sceneRect().size())
 
     def mousePressEvent(self, event):
-        """Handle mouse press to start drawing rectangle"""
-        # Convert mouse coordinates to scene coordinates
         self.startPoint = self.mapToScene(event.pos())
         self.isDrawing = True
-        # Create initial rectangle
         if self.currentRect:
             self.scene.removeItem(self.currentRect)
         self.currentRect = self.scene.addRect(
@@ -61,25 +46,19 @@ class VideoGraphicsView(QGraphicsView):
         )
 
     def mouseMoveEvent(self, event):
-        """Handle mouse movement to update rectangle size"""
         if self.isDrawing and self.currentRect:
-            # Update rectangle size based on current mouse position
             current_point = self.mapToScene(event.pos())
             rect = QRectF(self.startPoint, current_point).normalized()
             self.currentRect.setRect(rect)
 
     def mouseReleaseEvent(self, event):
-        """Handle mouse release to finish drawing rectangle"""
         self.isDrawing = False
-        # Store final rectangle coordinates
         if self.currentRect:
             self.endPoint = self.mapToScene(event.pos())
 
     def get_selection_points(self):
-        """Return the rectangle selection points in view coordinates"""
         if self.currentRect:
             rect = self.currentRect.rect()
-            # Convert scene coordinates to view coordinates
             start = self.mapFromScene(rect.topLeft())
             end = self.mapFromScene(rect.bottomRight())
             return start, end
@@ -95,16 +74,13 @@ class VideoEditor(QMainWindow):
         self.endTime = 0
         self.isOneHanded = False
         
-        # Set up the main window
         self.central_widget = QWidget()
         self.setCentralWidget(self.central_widget)
         self.main_layout = QVBoxLayout(self.central_widget)
         
-        # Create stacked widget for multiple pages
         self.stacked_widget = QStackedWidget()
         self.main_layout.addWidget(self.stacked_widget)
         
-        # Create pages
         self.video_page = QWidget()
         self.results_page = QWidget()
         
@@ -114,30 +90,25 @@ class VideoEditor(QMainWindow):
         self.stacked_widget.addWidget(self.video_page)
         self.stacked_widget.addWidget(self.results_page)
         
-        self.sign_db = SignDatabase()
+        self.sign_db = SignDatabase(data_dir="sign_database")
+        print(f"Initialized sign database from: sign_database")
         
-        # Configure window
         self.setWindowTitle(self.title)
         self.setGeometry(100, 100, 1280, 720)
 
     def setup_video_page(self):
-        """Set up the video playback and control page"""
         layout = QVBoxLayout(self.video_page)
         
-        # Create and add video view
         self.videoWidget = VideoGraphicsView()
         layout.addWidget(self.videoWidget)
         
-        # Set up media player
         self.mediaPlayer.setVideoOutput(self.videoWidget.video_item)
         
-        # Create and add controls
         self.slider = QSlider(Qt.Orientation.Horizontal)
         self.slider.setRange(0, 0)
         self.slider.sliderMoved.connect(self.setPosition)
         layout.addWidget(self.slider)
         
-        # Add buttons
         self.loadPlayButton = QPushButton('Load Video')
         self.loadPlayButton.clicked.connect(self.loadOrPlayVideo)
         layout.addWidget(self.loadPlayButton)
@@ -159,14 +130,12 @@ class VideoEditor(QMainWindow):
         self.oneHandedCheckBox.stateChanged.connect(self.oneHandedCheckChanged)
         layout.addWidget(self.oneHandedCheckBox)
         
-        # Connect media player signals
         self.mediaPlayer.durationChanged.connect(self.durationChanged)
         self.mediaPlayer.positionChanged.connect(self.positionChanged)
         
         self.fileName = None
 
     def setup_results_page(self):
-        """Set up the results display page"""
         layout = QVBoxLayout(self.results_page)
         
         title_label = QLabel("Matching Results")

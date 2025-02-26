@@ -9,11 +9,16 @@ from sign_matcher import SignMatcher
 import cv2
 from hand_processing import extract_hand_image, preprocess_hand_image
 
-def load_database(db_file="sign_database.json"):
-    if os.path.exists(db_file):
-        with open(db_file, 'r') as f:
-            return json.load(f)["signs"]
-    return {}
+def load_database(db_dir="sign_database", db_file="sign_data.json"):
+    db_path = os.path.join(db_dir, db_file)
+    if os.path.exists(db_path):
+        print(f"Loading database from: {db_path}")
+        with open(db_path, 'r') as f:
+            db_data = json.load(f)
+            return db_data.get("signs", {})
+    else:
+        print(f"Database file not found at: {db_path}")
+        return {}
 
 def GetValues(startTime, endTime, startPoint, endPoint, fileName, isOneHanded, add_to_db=False):
     print(f"Processing video: {fileName}")
@@ -54,14 +59,26 @@ def GetValues(startTime, endTime, startPoint, endPoint, fileName, isOneHanded, a
     print(f"Crop dimensions: {crop_dimensions}")
 
     try:
-        (
-            ffmpeg
-            .input(fileName, ss=start_seconds, t=end_seconds-start_seconds)
-            .filter('crop', *crop_dimensions.split(':'))
-            .output(output_fileName)
-            .overwrite_output()
-            .run(quiet=True)
-        )
+        crop_needed = (width < original_width - 10 or height < original_height - 10)
+        
+        if crop_needed:
+            (
+                ffmpeg
+                .input(fileName, ss=start_seconds, t=end_seconds-start_seconds)
+                .filter('crop', *crop_dimensions.split(':'))
+                .output(output_fileName)
+                .overwrite_output()
+                .run(quiet=True)
+            )
+        else:
+            (
+                ffmpeg
+                .input(fileName, ss=start_seconds, t=end_seconds-start_seconds)
+                .output(output_fileName)
+                .overwrite_output()
+                .run(quiet=True)
+            )
+            
         print(f"Processed video saved as: {output_fileName}")
 
         origin, scaling_factor, videoDir = detect_face(output_fileName)
@@ -82,21 +99,36 @@ def GetValues(startTime, endTime, startPoint, endPoint, fileName, isOneHanded, a
          orientation_dom_arr,
          orientation_nondom_arr,
          orientation_delta_arr) = HandCoordinates(videoDir, origin, scaling_factor, isOneHanded)
+         
+        if centroids_dom_arr.size == 0 or len(hand_boxes_dom) == 0:
+            print("No hand coordinates detected")
+            return [], origin, scaling_factor, None
 
         cap = cv2.VideoCapture(videoDir)
         ret, first_frame = cap.read()
         if not ret:
             print("Failed to read first frame")
             return [], None, None, None
+
+        last_frame = first_frame.copy()
         
         frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        cap.set(cv2.CAP_PROP_POS_FRAMES, frame_count - 1)
-        ret, last_frame = cap.read()
-        if not ret:
-            print("Failed to read last frame")
-            return [], None, None, None
+        if frame_count > 1:
+            safe_last_frame_pos = max(0, min(frame_count - 2, frame_count - 1))
+            cap.set(cv2.CAP_PROP_POS_FRAMES, safe_last_frame_pos)
+            ret, potential_last_frame = cap.read()
+            if ret:
+                last_frame = potential_last_frame
+            else:
+                print("Could not read near-last frame, using first frame as last frame")
+        else:
+            print("Video has only one frame, using it as both first and last")
         
         cap.release()
+
+        if len(hand_boxes_dom) == 0:
+            print("No hand boxes detected")
+            return [], origin, scaling_factor, None
 
         dom_start_img = extract_hand_image(first_frame, hand_boxes_dom[0])
         dom_end_img = extract_hand_image(last_frame, hand_boxes_dom[-1])
@@ -138,7 +170,9 @@ def GetValues(startTime, endTime, startPoint, endPoint, fileName, isOneHanded, a
             })
 
         if add_to_db:
-            db_data = load_database()
+            db_dir = "sign_database"
+            db_file = "sign_data.json"
+            db_data = load_database(db_dir, db_file)
             db_data[fileName] = {
                 "name": os.path.splitext(os.path.basename(fileName))[0],
                 "features": processed_features,
@@ -147,12 +181,17 @@ def GetValues(startTime, endTime, startPoint, endPoint, fileName, isOneHanded, a
                 "origin": [float(x) for x in origin] if isinstance(origin, (tuple, list)) else [0.0, 0.0],
                 "scaling_factor": float(scaling_factor)
             }
-            with open("sign_database.json", 'w') as f:
+            db_path = os.path.join(db_dir, db_file)
+            if not os.path.exists(db_dir):
+                os.makedirs(db_dir)
+            with open(db_path, 'w') as f:
                 json.dump({"signs": db_data}, f, indent=4)
-            print(f"Added sign data to database: {fileName}")
+            print(f"Added sign data to database: {db_path}")
 
         matches = []
-        db_data = load_database()
+        db_dir = "sign_database"
+        db_file = "sign_data.json"
+        db_data = load_database(db_dir, db_file)
 
         if db_data:
             matcher = SignMatcher()
@@ -166,12 +205,17 @@ def GetValues(startTime, endTime, startPoint, endPoint, fileName, isOneHanded, a
                 database_signs.append(entry['features'])
                 sign_names.append(entry['name'])
             
-            distance_matches = matcher.find_matches(processed_features, database_signs, top_k=10)
+            print(f"Found {len(database_signs)} matching signs in database for comparison")
             
-            for idx, similarity in distance_matches:
-                sign_name = sign_names[idx]
-                matches.append((sign_name, similarity))
-                print(f"Match: {sign_name}, Similarity: {similarity:.2f}%")
+            if database_signs:
+                distance_matches = matcher.find_matches(processed_features, database_signs, top_k=10)
+                
+                for idx, similarity in distance_matches:
+                    sign_name = sign_names[idx]
+                    matches.append((sign_name, similarity))
+                    print(f"Match: {sign_name}, Similarity: {similarity:.2f}%")
+            else:
+                print("No compatible signs found in database for comparison")
 
         return matches, origin, scaling_factor, processed_features
 

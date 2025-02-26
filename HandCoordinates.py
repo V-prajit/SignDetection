@@ -22,12 +22,17 @@ def HandCoordinates(videoDir, origin, scaling_factor, isOneHanded):
     bboxes_dom = []
     bboxes_nondom = []
     l_delta = []
-
+    
+    found_hand = False
+    frame_count = 0
+    max_frames_to_check = 30 
+    
     while True:
         ret, frame = cap.read()
         if not ret:
             break
-
+            
+        frame_count += 1
         frame_height, frame_width = frame.shape[:2]
         frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         results = mp_hands.process(frame_rgb)
@@ -69,11 +74,16 @@ def HandCoordinates(videoDir, origin, scaling_factor, isOneHanded):
             if len(hand_data) >= 1:
                 frame_centroids_dom = hand_data[0]['centroid']
                 frame_bbox_dom = hand_data[0]['bbox']
+                found_hand = True 
                 
                 if len(hand_data) >= 2 and not isOneHanded:
                     frame_centroids_nondom = hand_data[1]['centroid']
                     frame_bbox_nondom = hand_data[1]['bbox']
 
+        if not found_hand and frame_count >= max_frames_to_check:
+            print(f"No hands detected in first {max_frames_to_check} frames. Stopping processing.")
+            break
+            
         if frame_centroids_dom:
             centroids_dom.append(frame_centroids_dom)
             bboxes_dom.append(frame_bbox_dom)
@@ -113,6 +123,9 @@ def HandCoordinates(videoDir, origin, scaling_factor, isOneHanded):
         orientation_list = []
         length = len(coords_arr)
         
+        if length <= 1:
+            return np.array([[0, 0]] * length, dtype=np.float32)
+        
         for i in range(length):
             i_prev = max(0, i-1)
             i_next = min(length-1, i+1)
@@ -137,7 +150,13 @@ def HandCoordinates(videoDir, origin, scaling_factor, isOneHanded):
     print(f"\nHand Detection Statistics:")
     print(f"Total frames: {total_frames}")
     print(f"Frames with detected hands: {detected_frames}")
-    print(f"Detection rate: {(detected_frames/total_frames)*100:.2f}%")
+    detection_rate = (detected_frames/total_frames)*100 if total_frames > 0 else 0
+    print(f"Detection rate: {detection_rate:.2f}%")
+
+    if not found_hand or detection_rate < 5:
+        print("Insufficient hand detection. Returning empty arrays.")
+        empty = np.array([])
+        return empty, empty, empty, empty, origin, empty, empty, empty, empty
 
     return (
         centroids_dom_arr,
