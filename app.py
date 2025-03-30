@@ -10,7 +10,7 @@ from PyQt6.QtCore import Qt, QUrl, QRectF, QPointF
 from PyQt6.QtGui import QPen, QColor
 from VideoTrimAndCropping import GetValues
 from database_manager import SignDatabase
-
+import cv2
 class VideoGraphicsView(QGraphicsView):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -72,6 +72,8 @@ class VideoEditor(QMainWindow):
         self.videoLoaded = False
         self.startTime = 0
         self.endTime = 0
+        self.startTimeSet = False
+        self.endTimeSet = False
         self.isOneHanded = False
         
         self.central_widget = QWidget()
@@ -171,6 +173,9 @@ class VideoEditor(QMainWindow):
                 self.mediaPlayer.setSource(QUrl.fromLocalFile(fileName))
                 self.videoLoaded = True
                 self.loadPlayButton.setText('Play')
+                
+                self.trimButton.setEnabled(True)
+                
                 self.playVideo()
 
     def playVideo(self):
@@ -179,10 +184,12 @@ class VideoEditor(QMainWindow):
 
     def setStartTime(self):
         self.startTime = self.mediaPlayer.position()
+        self.startTimeSet = True
         self.trimButton.setEnabled(True)
 
     def setEndTime(self):
         self.endTime = self.mediaPlayer.position()
+        self.endTimeSet = True
         self.trimButton.setEnabled(True)
 
     def oneHandedCheckChanged(self, state):
@@ -191,28 +198,60 @@ class VideoEditor(QMainWindow):
     def trimVideo(self):
         try:
             start_point, end_point = self.videoWidget.get_selection_points()
-            if start_point and end_point:
-                matches, origin, scaling_factor, features = GetValues(
-                    self.startTime,
-                    self.endTime,
-                    start_point,
-                    end_point,
-                    self.fileName,
-                    self.isOneHanded
-                )
+            
+            # Check if ROI has been set
+            if not start_point or not end_point:
+                cap = cv2.VideoCapture(self.fileName)
+                if cap.isOpened():
+                    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+                    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+                    start_point = QPoint(0, 0)
+                    end_point = QPoint(width, height)
+                    print(f"No ROI selected. Using full video dimensions: {width}x{height}")
+                    cap.release()
+                else:
+                    print("Could not open video to get dimensions")
+                    return
+            
+            # Check if time bounds have been set
+            if self.startTime == 0 and self.endTime == 0:
+                cap = cv2.VideoCapture(self.fileName)
+                if cap.isOpened():
+                    fps = cap.get(cv2.CAP_PROP_FPS)
+                    frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+                    if frame_count > 0 and fps > 0:
+                        self.endTime = (frame_count / fps) * 1000  # Convert to milliseconds
+                        print(f"No time bounds set. Using full video duration: {self.endTime/1000} seconds")
+                    else:
+                        # Fallback duration if frame_count or fps is invalid
+                        self.endTime = 5000  # 5 seconds
+                        print("Warning: Could not determine video length. Using 5 seconds as default")
+                    cap.release()
+                else:
+                    print("Could not open video to get duration")
+                    return
+                    
+            matches, origin, scaling_factor, features = GetValues(
+                self.startTime,
+                self.endTime,
+                start_point,
+                end_point,
+                self.fileName,
+                self.isOneHanded
+            )
                 
-                self.resultsList.clear()
+            self.resultsList.clear()
                 
-                if matches:
+            if matches:
                     for i, (sign_name, distance) in enumerate(matches, 1):
                         similarity = 1 / (1 + distance)
                         self.resultsList.addItem(
                             f"{i}. {sign_name} (Similarity: {similarity:.2f})"
                         )
-                else:
+            else:
                     self.resultsList.addItem("No matching signs found")
                 
-                self.show_results_page()
+            self.show_results_page()
                     
         except Exception as e:
             print(f"Error processing video: {str(e)}")

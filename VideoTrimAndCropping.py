@@ -59,26 +59,39 @@ def GetValues(startTime, endTime, startPoint, endPoint, fileName, isOneHanded, a
     print(f"Crop dimensions: {crop_dimensions}")
 
     try:
-        crop_needed = (width < original_width - 10 or height < original_height - 10)
+        print(f"Attempting to extract all frames from video...")
+        (
+            ffmpeg
+            .input(fileName)  # Use the entire file without time restrictions
+            .filter('fps', fps=30)  # Force 30fps output
+            .output(output_fileName, vsync=0)  # vsync=0 helps with problematic sources
+            .overwrite_output()
+            .run(quiet=True)
+        )
         
-        if crop_needed:
+        # Verify the transformed video has multiple frames
+        check_cap = cv2.VideoCapture(output_fileName)
+        check_frame_count = int(check_cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        check_cap.release()
+        print(f"Transformed video contains {check_frame_count} frames")
+        
+        if check_frame_count <= 1:
+            # Try alternative approach with different parameters
+            print("First approach failed, trying alternate method...")
             (
                 ffmpeg
-                .input(fileName, ss=start_seconds, t=end_seconds-start_seconds)
-                .filter('crop', *crop_dimensions.split(':'))
-                .output(output_fileName)
-                .overwrite_output()
-                .run(quiet=True)
-            )
-        else:
-            (
-                ffmpeg
-                .input(fileName, ss=start_seconds, t=end_seconds-start_seconds)
-                .output(output_fileName)
+                .input(fileName)
+                .output(output_fileName, c='copy')  # Direct stream copy
                 .overwrite_output()
                 .run(quiet=True)
             )
             
+            # Verify again
+            check_cap = cv2.VideoCapture(output_fileName)
+            check_frame_count = int(check_cap.get(cv2.CAP_PROP_FRAME_COUNT))
+            check_cap.release()
+            print(f"After second attempt, transformed video contains {check_frame_count} frames")
+        
         print(f"Processed video saved as: {output_fileName}")
 
         origin, scaling_factor, videoDir = detect_face(output_fileName)

@@ -17,6 +17,13 @@ def HandCoordinates(videoDir, origin, scaling_factor, isOneHanded):
         empty = np.array([])
         return empty, empty, empty, empty, origin, empty, empty, empty, empty
 
+    # Get reported properties (these might be inaccurate)
+    reported_frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    reported_fps = cap.get(cv2.CAP_PROP_FPS)
+    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    print(f"Reported video properties: {width}x{height}, {reported_fps} fps, {reported_frame_count} frames")
+    
     centroids_dom = []
     centroids_nondom = []
     bboxes_dom = []
@@ -25,14 +32,17 @@ def HandCoordinates(videoDir, origin, scaling_factor, isOneHanded):
     
     found_hand = False
     frame_count = 0
-    max_frames_to_check = 30 
     
+    # Force reading all frames regardless of reported count
     while True:
         ret, frame = cap.read()
         if not ret:
             break
             
         frame_count += 1
+        if frame_count % 10 == 0:  # Report progress every 10 frames
+            print(f"Processing frame {frame_count}")
+        
         frame_height, frame_width = frame.shape[:2]
         frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         results = mp_hands.process(frame_rgb)
@@ -69,21 +79,18 @@ def HandCoordinates(videoDir, origin, scaling_factor, isOneHanded):
                     'raw_x': cx
                 })
             
-            hand_data.sort(key=lambda x: x['raw_x'], reverse=True)
-            
-            if len(hand_data) >= 1:
-                frame_centroids_dom = hand_data[0]['centroid']
-                frame_bbox_dom = hand_data[0]['bbox']
-                found_hand = True 
+            if hand_data:
+                hand_data.sort(key=lambda x: x['raw_x'], reverse=True)
                 
-                if len(hand_data) >= 2 and not isOneHanded:
-                    frame_centroids_nondom = hand_data[1]['centroid']
-                    frame_bbox_nondom = hand_data[1]['bbox']
+                if len(hand_data) >= 1:
+                    frame_centroids_dom = hand_data[0]['centroid']
+                    frame_bbox_dom = hand_data[0]['bbox']
+                    found_hand = True 
+                    
+                    if len(hand_data) >= 2 and not isOneHanded:
+                        frame_centroids_nondom = hand_data[1]['centroid']
+                        frame_bbox_nondom = hand_data[1]['bbox']
 
-        if not found_hand and frame_count >= max_frames_to_check:
-            print(f"No hands detected in first {max_frames_to_check} frames. Stopping processing.")
-            break
-            
         if frame_centroids_dom:
             centroids_dom.append(frame_centroids_dom)
             bboxes_dom.append(frame_bbox_dom)
@@ -112,6 +119,14 @@ def HandCoordinates(videoDir, origin, scaling_factor, isOneHanded):
 
     cap.release()
     mp_hands.close()
+
+    print(f"Actually processed {frame_count} frames (reported: {reported_frame_count})")
+    print(f"Found hands in at least one frame: {found_hand}")
+    
+    if frame_count <= 1:
+        print("ERROR: Only processed one frame! The video might be corrupted.")
+        empty = np.array([])
+        return empty, empty, empty, empty, origin, empty, empty, empty, empty
 
     centroids_dom_arr = np.array(centroids_dom, dtype=np.float32)
     centroids_nondom_arr = np.array(centroids_nondom, dtype=np.float32)
