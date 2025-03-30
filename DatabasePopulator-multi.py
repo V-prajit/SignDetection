@@ -4,7 +4,6 @@ import time
 import multiprocessing
 import traceback
 from concurrent.futures import ProcessPoolExecutor, as_completed
-from VideoTrimAndCropping import GetValues
 from PyQt6.QtCore import QPoint
 import cv2
 import numpy as np
@@ -156,26 +155,12 @@ class DatabasePopulator:
             print(f"Video not found: {video_path}")
             return {"status": "error", "path": video_path, "reason": "not_found"}
 
-        if video_path in self.db_data["signs"]:
-            print(f"Video already in database: {video_path}")
-            return {"status": "skipped", "path": video_path, "reason": "existing"}
-
         try:
             video_start_time = time.time()
 
-            duration = self.get_video_duration(video_path)
-            if duration is None:
-                print(f"Could not read video: {video_path}")
-                return {"status": "error", "path": video_path, "reason": "duration_error"}
-
-            start_point, end_point = self.calculate_roi_points(video_path)
-            
-            matches, origin, scaling_factor, features = GetValues(
-                0, 
-                duration, 
-                start_point,
-                end_point,
-                video_path,
+            # Extract features directly without using GetValues which does comparison
+            features, origin, scaling_factor, duration = self._extract_features_only(
+                video_path, 
                 is_one_handed
             )
 
@@ -215,156 +200,179 @@ class DatabasePopulator:
             traceback.print_exc()
             return {"status": "error", "path": video_path, "reason": str(e)}
 
-    def process_videos(self, video_list_file):
-        """Process videos in parallel using multiple processes"""
-        if not os.path.exists(video_list_file):
-            print(f"Error: Video list file not found: {video_list_file}")
-            return
+    def _extract_features_only(self, video_path, is_one_handed):
+        """Extract features from a video without comparing to database"""
+        from faceDetection import detect_face
+        from HandCoordinates import HandCoordinates
+        from hand_processing import extract_hand_image, preprocess_hand_image
+        from LinearInterpolation import InterpolateAndResample
+        import ffmpeg
+        import os
+        import cv2
+        
+        print(f"Extracting features from: {video_path}")
+        
+        # Get video duration
+        duration = self.get_video_duration(video_path)
+        if duration is None:
+            print(f"Could not read video: {video_path}")
+            return None, None, None, None
+            
+        # Calculate ROI
+        start_point, end_point = self.calculate_roi_points(video_path)
+        
+        # Process the video with ffmpeg (optionally with hardware acceleration)
+        baseName = os.path.basename(video_path)
+        fileName_NoExtension, extension = os.path.splitext(baseName)
+        output_fileName = f"{fileName_NoExtension}_transformed{extension}"
+        
+        # Get hardware acceleration option (code from VideoTrimAndCropping.py)
+        def get_hardware_acceleration_option():
+            import platform
+            import subprocess
+            
+            system = platform.system()
+            
+            try:
+                result = subprocess.run(
+                    ["ffmpeg", "-hwaccels"], 
+                    capture_output=True, 
+                    text=True
+                )
+                hwaccels = result.stdout.lower()
+                
+                if "videotoolbox" in hwaccels and system == "Darwin":
+                    return "videotoolbox"
+                elif "cuda" in hwaccels:
+                    return "cuda"
+                elif "qsv" in hwaccels:
+                    return "qsv"
+                elif "vaapi" in hwaccels:
+                    return "vaapi"
+                elif "dxva2" in hwaccels and system == "Windows":
+                    return "dxva2"
+                elif "d3d11va" in hwaccels and system == "Windows":
+                    return "d3d11va"
+                else:
+                    return None
+            except:
+                return None
+                
+        hw_accel = get_hardware_acceleration_option()
+        print(f"Hardware acceleration: {hw_accel if hw_accel else 'Not available'}")
 
-        with open(video_list_file, 'r') as f:
-            video_entries = f.readlines()
-            
-        if self.max_signs is not None:
-            print(f"Limiting processing to {self.max_signs} signs as requested")
-            video_entries = video_entries[:self.max_signs]
-        
-        total_videos = len(video_entries)
-        processed_count = 0
-        skipped_count = 0
-        error_count = 0
-        
-        overall_start_time = time.time()
-        
         try:
-            # Use process pool for parallel execution
-            print(f"Processing {total_videos} videos using {self.num_workers} worker processes")
+            # Process with ffmpeg
+            if hw_accel:
+                (
+                    ffmpeg
+                    .input(video_path, hwaccel=hw_accel)
+                    .filter('fps', fps=30)
+                    .output(output_fileName, vsync=0)
+                    .overwrite_output()
+                    .run(quiet=True)
+                )
+            else:
+                (
+                    ffmpeg
+                    .input(video_path)
+                    .filter('fps', fps=30)
+                    .output(output_fileName, vsync=0, threads=8)
+                    .overwrite_output()
+                    .run(quiet=True)
+                )
+                
+            # Detect face for normalization
+            origin, scaling_factor, _ = detect_face(output_fileName)
+            if origin is None or scaling_factor is None:
+                print("Face detection failed, using default normalization parameters")
+                cap = cv2.VideoCapture(output_fileName)
+                width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+                height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+                cap.release()
+                origin = (width/2, height/2)
+                scaling_factor = 1.0/height
+                
+            print(f"Using normalization - Origin: {origin}, Scaling: {scaling_factor}")
             
-            # Process videos in batches
-            batch_count = 0
-            for i in range(0, len(video_entries), self.batch_size):
-                batch = video_entries[i:i+self.batch_size]
-                batch_count += 1
-                print(f"\nProcessing batch {batch_count} ({len(batch)} videos)")
-                
-                with ProcessPoolExecutor(max_workers=self.num_workers) as executor:
-                    future_to_video = {executor.submit(self._process_video, entry): entry for entry in batch}
-                    
-                    for future in as_completed(future_to_video):
-                        try:
-                            result = future.result()
-                            status = result.get("status")
-                            
-                            if status == "processed":
-                                processed_count += 1
-                                # Add to database
-                                video_path = result["path"]
-                                self.db_data["signs"][video_path] = {
-                                    "name": result["name"],
-                                    "features": result["features"],
-                                    "is_one_handed": result["is_one_handed"],
-                                    "duration": result["duration"],
-                                    "origin": result["origin"],
-                                    "scaling_factor": result["scaling_factor"],
-                                    "processing_time": result["processing_time"]
-                                }
-                                
-                                self.benchmark_data["processing_times"].append({
-                                    "sign_name": result["name"],
-                                    "video_path": video_path,
-                                    "processing_time_seconds": result["processing_time"],
-                                    "video_duration_ms": result["duration"],
-                                    "features_count": {
-                                        key: len(value) if isinstance(value, list) else "N/A" 
-                                        for key, value in result["features"].items()
-                                    } if result["features"] else {}
-                                })
-                                
-                                print(f"Successfully processed: {result['name']} (in {result['processing_time']:.2f}s)")
-                                
-                            elif status == "skipped":
-                                skipped_count += 1
-                                print(f"Skipped: {result['path']} ({result['reason']})")
-                                
-                            else:  # error
-                                error_count += 1
-                                print(f"Error processing: {result['path']} ({result['reason']})")
-                                
-                        except Exception as e:
-                            error_count += 1
-                            print(f"Error in future: {str(e)}")
-                            traceback.print_exc()
-                
-                # Save database after each batch
-                self._save_db()
-                
-                # Report progress
-                completed = processed_count + skipped_count + error_count
-                print(f"Progress: {completed}/{total_videos} ({completed/total_videos*100:.1f}%)")
-                print(f"Processed: {processed_count}, Skipped: {skipped_count}, Errors: {error_count}")
-        
-        except Exception as e:
-            print(f"Error during batch processing: {str(e)}")
-            traceback.print_exc()
-        
-        finally:
-            overall_time = time.time() - overall_start_time
+            # Extract hand coordinates
+            (centroids_dom_arr,
+             centroids_nondom_arr,
+             hand_boxes_dom,
+             hand_boxes_nondom,
+             _,  # origin is already set
+             l_delta_arr,
+             orientation_dom_arr,
+             orientation_nondom_arr,
+             orientation_delta_arr) = HandCoordinates(output_fileName, origin, scaling_factor, is_one_handed)
             
-            self.benchmark_data["summary"] = {
-                "total_videos": total_videos,
-                "processed_count": processed_count,
-                "skipped_count": skipped_count,
-                "error_count": error_count,
-                "total_time_seconds": overall_time,
-                "average_time_per_video": overall_time / max(processed_count, 1),
-                "num_workers": self.num_workers,
-                "batch_size": self.batch_size
+            if centroids_dom_arr.size == 0 or len(hand_boxes_dom) == 0:
+                print("No hand coordinates detected")
+                return None, None, None, None
+                
+            # Extract hand images from first and last frame
+            cap = cv2.VideoCapture(output_fileName)
+            ret, first_frame = cap.read()
+            if not ret:
+                print("Failed to read first frame")
+                return None, None, None, None
+                
+            last_frame = first_frame.copy()
+            frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+            if frame_count > 1:
+                safe_last_frame_pos = max(0, min(frame_count - 2, frame_count - 1))
+                cap.set(cv2.CAP_PROP_POS_FRAMES, safe_last_frame_pos)
+                ret, potential_last_frame = cap.read()
+                if ret:
+                    last_frame = potential_last_frame
+            cap.release()
+            
+            # Process hand images
+            dom_start_img = extract_hand_image(first_frame, hand_boxes_dom[0])
+            dom_end_img = extract_hand_image(last_frame, hand_boxes_dom[-1])
+            
+            H_d_s = preprocess_hand_image(dom_start_img)
+            H_d_e = preprocess_hand_image(dom_end_img)
+            
+            # Interpolate to standardize feature length
+            TARGET_FRAMES = 20
+            Interpolated_Dominant_Hand = InterpolateAndResample(centroids_dom_arr, TARGET_FRAMES)
+            Interpolated_nonDominant_Hand = InterpolateAndResample(centroids_nondom_arr, TARGET_FRAMES)
+            Interpolated_l_Delta = InterpolateAndResample(l_delta_arr, TARGET_FRAMES)
+            Interpolated_orient_dom = InterpolateAndResample(orientation_dom_arr, TARGET_FRAMES)
+            Interpolated_orient_nondom = InterpolateAndResample(orientation_nondom_arr, TARGET_FRAMES)
+            Interpolated_orient_delta = InterpolateAndResample(orientation_delta_arr, TARGET_FRAMES)
+            
+            # Create features dictionary
+            processed_features = {
+                'centroids_dom_arr': Interpolated_Dominant_Hand.tolist(),
+                'centroids_nondom_arr': Interpolated_nonDominant_Hand.tolist(),
+                'l_delta_arr': Interpolated_l_Delta.tolist(),
+                'orientation_dom_arr': Interpolated_orient_dom.tolist(),
+                'orientation_nondom_arr': Interpolated_orient_nondom.tolist(),
+                'orientation_delta_arr': Interpolated_orient_delta.tolist(),
+                'H_d_s': H_d_s,
+                'H_d_e': H_d_e,
+                'is_one_handed': is_one_handed,
+                'frame_count': TARGET_FRAMES
             }
             
-            print("\n--- PROCESSING SUMMARY ---")
-            print(f"Total videos in list: {total_videos}")
-            print(f"Videos processed: {processed_count}")
-            print(f"Videos skipped: {skipped_count}")
-            print(f"Errors: {error_count}")
-            print(f"Total processing time: {overall_time:.2f}s")
-            print(f"Average time per video: {overall_time / max(processed_count, 1):.2f}s")
+            # Add non-dominant hand features if applicable
+            if not is_one_handed and len(hand_boxes_nondom) > 0:
+                nondom_start_img = extract_hand_image(first_frame, hand_boxes_nondom[0])
+                nondom_end_img = extract_hand_image(last_frame, hand_boxes_nondom[-1])
+                
+                H_nd_s = preprocess_hand_image(nondom_start_img)
+                H_nd_e = preprocess_hand_image(nondom_end_img)
+                
+                processed_features.update({
+                    'H_nd_s': H_nd_s,
+                    'H_nd_e': H_nd_e
+                })
+                
+            return processed_features, origin, scaling_factor, duration
             
-            self._save_db()
-
-def main():
-    import argparse
-    
-    parser = argparse.ArgumentParser(description='Process sign language videos for database.')
-    parser.add_argument('--max_signs', type=int, help='Maximum number of signs to process')
-    parser.add_argument('--db_dir', type=str, default="sign_database",
-                      help='Directory to store database files')
-    parser.add_argument('--video_list', type=str, default="videos_to_add.txt",
-                      help='Path to video list file')
-    parser.add_argument('--no_json', action='store_true', 
-                      help='Disable JSON file creation (for release)')
-    parser.add_argument('--workers', type=int, default=None,
-                      help='Number of worker processes (default: CPU count - 1)')
-    parser.add_argument('--batch_size', type=int, default=5,
-                      help='Number of videos to process in each batch before saving')
-    
-    args = parser.parse_args()
-    
-    populator = DatabasePopulator(
-        db_dir=args.db_dir,
-        json_backup=not args.no_json,
-        max_signs=args.max_signs,
-        num_workers=args.workers,
-        batch_size=args.batch_size
-    )
-    
-    print(f"Starting database population with settings:")
-    print(f"  Max signs: {args.max_signs if args.max_signs else 'All'}")
-    print(f"  Database directory: {args.db_dir}")
-    print(f"  JSON files: {'Disabled' if args.no_json else 'Enabled'}")
-    print(f"  Video list: {args.video_list}")
-    print(f"  Worker processes: {populator.num_workers}")
-    print(f"  Batch size: {args.batch_size}")
-    
-    populator.process_videos(args.video_list)
-
-if __name__ == "__main__":
-    main()
+        except Exception as e:
+            print(f"Error in feature extraction: {str(e)}")
+            traceback.print_exc()
+            return None, None, None, None

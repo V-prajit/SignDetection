@@ -136,6 +136,117 @@ class DatabasePopulator:
         print(f"Calculated ROI: ({start_x}, {start_y}) to ({end_x}, {end_y})")
         return QPoint(start_x, start_y), QPoint(end_x, end_y)
 
+    # Modified to extract feature extraction logic from GetValues
+    def extract_features_only(self, video_path, is_one_handed):
+        """Extract features from a video without comparing to database"""
+        from faceDetection import detect_face
+        from HandCoordinates import HandCoordinates
+        from hand_processing import extract_hand_image, preprocess_hand_image
+        from LinearInterpolation import InterpolateAndResample
+        import os
+        import cv2
+        
+        print(f"Extracting features from: {video_path}")
+        
+        # Get video duration
+        duration = self.get_video_duration(video_path)
+        if duration is None:
+            print(f"Could not read video: {video_path}")
+            return None, None, None, None
+            
+        # Calculate ROI
+        start_point, end_point = self.calculate_roi_points(video_path)
+        
+        # Detect face for normalization
+        origin, scaling_factor, _ = detect_face(video_path)
+        if origin is None or scaling_factor is None:
+            print("Face detection failed, using default normalization parameters")
+            cap = cv2.VideoCapture(video_path)
+            width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+            height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+            cap.release()
+            origin = (width/2, height/2)
+            scaling_factor = 1.0/height
+            
+        print(f"Using normalization - Origin: {origin}, Scaling: {scaling_factor}")
+        
+        # Extract hand coordinates
+        (centroids_dom_arr,
+         centroids_nondom_arr,
+         hand_boxes_dom,
+         hand_boxes_nondom,
+         _,  # origin is already set
+         l_delta_arr,
+         orientation_dom_arr,
+         orientation_nondom_arr,
+         orientation_delta_arr) = HandCoordinates(video_path, origin, scaling_factor, is_one_handed)
+        
+        if centroids_dom_arr.size == 0 or len(hand_boxes_dom) == 0:
+            print("No hand coordinates detected")
+            return None, None, None, None
+            
+        # Extract hand images from first and last frame
+        cap = cv2.VideoCapture(video_path)
+        ret, first_frame = cap.read()
+        if not ret:
+            print("Failed to read first frame")
+            return None, None, None, None
+            
+        last_frame = first_frame.copy()
+        frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        if frame_count > 1:
+            safe_last_frame_pos = max(0, min(frame_count - 2, frame_count - 1))
+            cap.set(cv2.CAP_PROP_POS_FRAMES, safe_last_frame_pos)
+            ret, potential_last_frame = cap.read()
+            if ret:
+                last_frame = potential_last_frame
+        cap.release()
+        
+        # Process hand images
+        dom_start_img = extract_hand_image(first_frame, hand_boxes_dom[0])
+        dom_end_img = extract_hand_image(last_frame, hand_boxes_dom[-1])
+        
+        H_d_s = preprocess_hand_image(dom_start_img)
+        H_d_e = preprocess_hand_image(dom_end_img)
+        
+        # Interpolate to standardize feature length
+        TARGET_FRAMES = 20
+        Interpolated_Dominant_Hand = InterpolateAndResample(centroids_dom_arr, TARGET_FRAMES)
+        Interpolated_nonDominant_Hand = InterpolateAndResample(centroids_nondom_arr, TARGET_FRAMES)
+        Interpolated_l_Delta = InterpolateAndResample(l_delta_arr, TARGET_FRAMES)
+        Interpolated_orient_dom = InterpolateAndResample(orientation_dom_arr, TARGET_FRAMES)
+        Interpolated_orient_nondom = InterpolateAndResample(orientation_nondom_arr, TARGET_FRAMES)
+        Interpolated_orient_delta = InterpolateAndResample(orientation_delta_arr, TARGET_FRAMES)
+        
+        # Create features dictionary
+        processed_features = {
+            'centroids_dom_arr': Interpolated_Dominant_Hand.tolist(),
+            'centroids_nondom_arr': Interpolated_nonDominant_Hand.tolist(),
+            'l_delta_arr': Interpolated_l_Delta.tolist(),
+            'orientation_dom_arr': Interpolated_orient_dom.tolist(),
+            'orientation_nondom_arr': Interpolated_orient_nondom.tolist(),
+            'orientation_delta_arr': Interpolated_orient_delta.tolist(),
+            'H_d_s': H_d_s,
+            'H_d_e': H_d_e,
+            'is_one_handed': is_one_handed,
+            'frame_count': TARGET_FRAMES
+        }
+        
+        # Add non-dominant hand features if applicable
+        if not is_one_handed and len(hand_boxes_nondom) > 0:
+            nondom_start_img = extract_hand_image(first_frame, hand_boxes_nondom[0])
+            nondom_end_img = extract_hand_image(last_frame, hand_boxes_nondom[-1])
+            
+            H_nd_s = preprocess_hand_image(nondom_start_img)
+            H_nd_e = preprocess_hand_image(nondom_end_img)
+            
+            processed_features.update({
+                'H_nd_s': H_nd_s,
+                'H_nd_e': H_nd_e
+            })
+            
+        return processed_features, origin, scaling_factor, duration
+
     def process_videos(self, video_list_file):
         if not os.path.exists(video_list_file):
             print(f"Error: Video list file not found: {video_list_file}")
@@ -178,33 +289,10 @@ class DatabasePopulator:
 
             video_start_time = time.time()
 
-            duration = self.get_video_duration(video_path)
-            if duration is None:
-                print(f"Could not read video: {video_path}")
-                error_count += 1
-                continue
-
-            cap = cv2.VideoCapture(video_path)
-            if not cap.isOpened():
-                print(f"Could not open video: {video_path}")
-                error_count += 1
-                continue
-                
-            width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-            height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-            cap.release()
-            
-            start_point = QPoint(0, 0)
-            end_point = QPoint(width, height)
-            print(f"Using full video frame dimensions: {width}x{height}")
-            
             try:
-                matches, origin, scaling_factor, features = GetValues(
-                    0, 
-                    duration, 
-                    start_point,
-                    end_point,
-                    video_path,
+                # Use our new method to extract features directly without comparing
+                features, origin, scaling_factor, duration = self.extract_features_only(
+                    video_path, 
                     is_one_handed
                 )
 
@@ -242,6 +330,7 @@ class DatabasePopulator:
                 if processed_count > 0 and processed_count % 10 == 0:
                     self._save_db()
 
+                # Clean up any temporary files
                 base_name = os.path.basename(video_path)
                 name_no_ext, ext = os.path.splitext(base_name)
                 transformed_video = f"{name_no_ext}_transformed{ext}"
@@ -251,6 +340,8 @@ class DatabasePopulator:
 
             except Exception as e:
                 print(f"Error processing {video_path}: {str(e)}")
+                import traceback
+                traceback.print_exc()
                 error_count += 1
                 try:
                     base_name = os.path.basename(video_path)
