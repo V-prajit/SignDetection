@@ -6,11 +6,12 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtMultimedia import QMediaPlayer
 from PyQt6.QtMultimediaWidgets import QGraphicsVideoItem
-from PyQt6.QtCore import Qt, QUrl, QRectF, QPointF
+from PyQt6.QtCore import Qt, QUrl, QRectF, QPoint
 from PyQt6.QtGui import QPen, QColor
 from VideoTrimAndCropping import GetValues
 from database_manager import SignDatabase
 import cv2
+
 class VideoGraphicsView(QGraphicsView):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -243,10 +244,9 @@ class VideoEditor(QMainWindow):
             self.resultsList.clear()
                 
             if matches:
-                    for i, (sign_name, distance) in enumerate(matches, 1):
-                        similarity = 1 / (1 + distance)
+                    for i, (sign_name, similarity) in enumerate(matches, 1):
                         self.resultsList.addItem(
-                            f"{i}. {sign_name} (Similarity: {similarity:.2f})"
+                            f"{i}. {sign_name} (Similarity: {similarity:.2f}%)"
                         )
             else:
                     self.resultsList.addItem("No matching signs found")

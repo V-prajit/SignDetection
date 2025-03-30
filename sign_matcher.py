@@ -81,12 +81,15 @@ class SignMatcher:
         
         for idx, db_sign in enumerate(database_signs):
             try:
+                # Skip signs with different handedness
                 if query_sign.get('is_one_handed', True) != db_sign.get('is_one_handed', True):
                     continue
                     
+                # Calculate motion and hand distances
                 motion_dist = self.compute_dtw_distance(query_sign, db_sign)
                 hand_dist = self.compute_hand_distance(query_sign, db_sign)
                 
+                # Combine distances using the hand weight factor
                 total_dist = motion_dist + self.f_hand * hand_dist
                 distances.append((idx, total_dist))
                 
@@ -97,18 +100,24 @@ class SignMatcher:
         if not distances:
             return []
             
+        # Find min and max distances for normalization
         min_dist = min(d for _, d in distances)
         max_dist = max(d for _, d in distances)
+        dist_range = max_dist - min_dist
         
         matches = []
         for idx, dist in distances:
-            if max_dist > min_dist:
-                similarity = 100 * np.exp(-(dist - min_dist)/(max_dist - min_dist))
+            if dist_range > 0:
+                # Linear normalization to convert distance to similarity (0-100%)
+                normalized_dist = (dist - min_dist) / dist_range
+                similarity = (1.0 - normalized_dist) * 100
             else:
-                similarity = 100 if dist == min_dist else 0
+                # Handle case where all distances are equal
+                similarity = 100.0 if dist == min_dist else 0.0
                 
             matches.append((idx, similarity))
         
+        # Sort by similarity (descending) and return top_k matches
         matches.sort(key=lambda x: x[1], reverse=True)
         return matches[:top_k]
 
@@ -187,40 +196,3 @@ class SignMatcher:
         except Exception as e:
             print(f"Error comparing signs: {str(e)}")
             return float('inf')
-
-    def find_matches(self, query_sign, database_signs, top_k=10):
-        distances = []
-        
-        for idx, db_sign in enumerate(database_signs):
-            try:
-                dtw_distance = self.compute_dtw_distance(query_sign, db_sign)
-                
-                hand_distance = self.compute_hand_distance(query_sign, db_sign)
-                
-                total_distance = dtw_distance + self.f_hand * hand_distance
-                
-                distances.append((idx, total_distance))
-                
-            except Exception as e:
-                print(f"Error comparing with sign {idx}: {str(e)}")
-                continue
-        
-        if not distances:
-            return []
-            
-        min_dist = min(d for _, d in distances)
-        max_dist = max(d for _, d in distances)
-        dist_range = max_dist - min_dist
-        
-        matches = []
-        for idx, dist in distances:
-            if dist_range > 0:
-                normalized_dist = (dist - min_dist) / dist_range
-                similarity = (1.0 - normalized_dist) * 100
-            else:
-                similarity = 100.0 if dist == min_dist else 0.0
-                
-            matches.append((idx, similarity))
-
-        matches.sort(key=lambda x: x[1], reverse=True)
-        return matches[:top_k]
