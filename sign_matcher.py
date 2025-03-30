@@ -45,7 +45,7 @@ class SignMatcher:
                 q_dom = self.convert_for_java(Q['centroids_dom_arr'])
                 x_dom = self.convert_for_java(X['centroids_dom_arr'])
                 if q_dom is not None and x_dom is not None:
-                    dist = self.dtw_server.computeFastDTW(q_dom, x_dom, 1)
+                    dist = self.dtw_server.calculateDTW(q_dom, x_dom)
                     motion_distance += self.f1 * dist
                     feature_count += 1
 
@@ -54,7 +54,7 @@ class SignMatcher:
                     q_nondom = self.convert_for_java(Q['centroids_nondom_arr'])
                     x_nondom = self.convert_for_java(X['centroids_nondom_arr'])
                     if q_nondom is not None and x_nondom is not None:
-                        dist = self.dtw_server.computeFastDTW(q_nondom, x_nondom, 1)
+                        dist = self.dtw_server.calculateDTW(q_nondom, x_nondom)
                         motion_distance += self.f2 * dist
                         feature_count += 1
 
@@ -62,7 +62,7 @@ class SignMatcher:
                     q_delta = self.convert_for_java(Q['l_delta_arr'])
                     x_delta = self.convert_for_java(X['l_delta_arr'])
                     if q_delta is not None and x_delta is not None:
-                        dist = self.dtw_server.computeFastDTW(q_delta, x_delta, 1)
+                        dist = self.dtw_server.calculateDTW(q_delta, x_delta)
                         motion_distance += self.f3 * dist
                         feature_count += 1
 
@@ -158,21 +158,21 @@ class SignMatcher:
                 q_dom = self.convert_for_java(Q['centroids_dom_arr'])
                 x_dom = self.convert_for_java(X['centroids_dom_arr'])
                 if q_dom is not None and x_dom is not None:
-                    dist = self.dtw_server.computeFastDTW(q_dom, x_dom, 1)
+                    dist = self.dtw_server.calculateDTW(q_dom, x_dom)
                     dtw_distance += self.f1 * dist
             
             if not Q.get('is_one_handed', True) and 'centroids_nondom_arr' in Q:
                 q_nondom = self.convert_for_java(Q['centroids_nondom_arr'])
                 x_nondom = self.convert_for_java(X['centroids_nondom_arr'])
                 if q_nondom is not None and x_nondom is not None:
-                    dist = self.dtw_server.computeFastDTW(q_nondom, x_nondom, 1)
+                    dist = self.dtw_server.calculateDTW(q_nondom, x_nondom)
                     dtw_distance += self.f2 * dist
                 
                 if Q['l_delta_arr'] and X['l_delta_arr']:
                     q_delta = self.convert_for_java(Q['l_delta_arr'])
                     x_delta = self.convert_for_java(X['l_delta_arr'])
                     if q_delta is not None and x_delta is not None:
-                        dist = self.dtw_server.computeFastDTW(q_delta, x_delta, 1)
+                        dist = self.dtw_server.calculateDTW(q_delta, x_delta)
                         dtw_distance += self.f3 * dist
             
             for feature, weight in [
@@ -184,7 +184,7 @@ class SignMatcher:
                     q_orient = self.convert_for_java(Q[feature])
                     x_orient = self.convert_for_java(X[feature])
                     if q_orient is not None and x_orient is not None:
-                        dist = self.dtw_server.computeFastDTW(q_orient, x_orient, 1)
+                        dist = self.dtw_server.calculateDTW(q_orient, x_orient)
                         dtw_distance += weight * dist
             
             hand_distance = self.compute_hand_distance(Q, X)
