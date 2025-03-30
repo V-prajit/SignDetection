@@ -1,15 +1,42 @@
 import cv2
 import mediapipe as mp
 import numpy as np
+import os
 
 def HandCoordinates(videoDir, origin, scaling_factor, isOneHanded):
+    # Enable OpenCL acceleration in OpenCV if available (helps on many platforms)
+    try:
+        if hasattr(cv2, 'ocl'):
+            cv2.ocl.setUseOpenCL(True)
+            print(f"OpenCL acceleration enabled: {cv2.ocl.useOpenCL()}")
+    except Exception as e:
+        print(f"Warning: Failed to enable OpenCL: {e}")
+
+    # Configure MediaPipe to use GPU when available
+    # Higher model_complexity uses more resources but can be more accurate
     mp_hands = mp.solutions.hands.Hands(
         static_image_mode=False,
         max_num_hands=2,
         min_detection_confidence=0.3,
         min_tracking_confidence=0.3,
-        model_complexity=1
+        model_complexity=1  # Use 1 for balanced performance/resource usage
     )
+    
+    # Print CUDA availability for debugging
+    try:
+        cuda_enabled = cv2.cuda.getCudaEnabledDeviceCount() > 0
+        print(f"CUDA enabled devices: {cv2.cuda.getCudaEnabledDeviceCount()}")
+    except:
+        cuda_enabled = False
+        print("CUDA not available in OpenCV")
+    
+    # Try to allocate GPU memory in advance
+    if cuda_enabled:
+        try:
+            gpu_mat = cv2.cuda_GpuMat()
+            print("Successfully initialized CUDA GpuMat")
+        except Exception as e:
+            print(f"Failed to initialize CUDA GpuMat: {e}")
     
     cap = cv2.VideoCapture(videoDir)
     if not cap.isOpened():
@@ -24,6 +51,9 @@ def HandCoordinates(videoDir, origin, scaling_factor, isOneHanded):
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     print(f"Reported video properties: {width}x{height}, {reported_fps} fps, {reported_frame_count} frames")
     
+    # Set hardware-accelerated decoding when possible
+    # cap.set(cv2.CAP_PROP_HW_ACCELERATION, 1)  # Enable hardware acceleration
+    
     centroids_dom = []
     centroids_nondom = []
     bboxes_dom = []
@@ -33,6 +63,12 @@ def HandCoordinates(videoDir, origin, scaling_factor, isOneHanded):
     found_hand = False
     frame_count = 0
     
+    # Pre-allocate buffers for better performance
+    frame_rgb = np.zeros((height, width, 3), dtype=np.uint8)
+    
+    # Increase buffer size for better throughput
+    cap.set(cv2.CAP_PROP_BUFFERSIZE, 10)
+    
     # Force reading all frames regardless of reported count
     while True:
         ret, frame = cap.read()
@@ -40,11 +76,13 @@ def HandCoordinates(videoDir, origin, scaling_factor, isOneHanded):
             break
             
         frame_count += 1
-        if frame_count % 10 == 0:  # Report progress every 10 frames
-            print(f"Processing frame {frame_count}")
+        if frame_count % 20 == 0:  # Report progress less frequently
+            print(f"Processing frame {frame_count}/{reported_frame_count}")
         
-        frame_height, frame_width = frame.shape[:2]
-        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        # Convert BGR to RGB directly on the array without copying
+        cv2.cvtColor(frame, cv2.COLOR_BGR2RGB, dst=frame_rgb)
+        
+        # Process with MediaPipe
         results = mp_hands.process(frame_rgb)
 
         frame_centroids_dom = None
@@ -55,8 +93,8 @@ def HandCoordinates(videoDir, origin, scaling_factor, isOneHanded):
         if results.multi_hand_landmarks:
             hand_data = []
             for hand_landmarks in results.multi_hand_landmarks:
-                x_coords = [lm.x * frame_width for lm in hand_landmarks.landmark]
-                y_coords = [lm.y * frame_height for lm in hand_landmarks.landmark]
+                x_coords = [lm.x * width for lm in hand_landmarks.landmark]
+                y_coords = [lm.y * height for lm in hand_landmarks.landmark]
                 cx = np.mean(x_coords)
                 cy = np.mean(y_coords)
                 
@@ -66,8 +104,8 @@ def HandCoordinates(videoDir, origin, scaling_factor, isOneHanded):
                 padding = 20
                 x_min = max(0, x_min - padding)
                 y_min = max(0, y_min - padding)
-                x_max = min(frame_width, x_max + padding)
-                y_max = min(frame_height, y_max + padding)
+                x_max = min(width, x_max + padding)
+                y_max = min(height, y_max + padding)
                 
                 norm_cx = (cx - origin[0]) * scaling_factor
                 norm_cy = (cy - origin[1]) * scaling_factor

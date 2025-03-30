@@ -9,6 +9,40 @@ from sign_matcher import SignMatcher
 import cv2
 from hand_processing import extract_hand_image, preprocess_hand_image
 
+def get_hardware_acceleration_option():
+    """Determine the best hardware acceleration option for ffmpeg on this system"""
+    import platform
+    import subprocess
+    
+    system = platform.system()
+    
+    # Check ffmpeg capabilities
+    try:
+        result = subprocess.run(
+            ["ffmpeg", "-hwaccels"], 
+            capture_output=True, 
+            text=True
+        )
+        hwaccels = result.stdout.lower()
+        
+        # Check for available hardware acceleration
+        if "videotoolbox" in hwaccels and system == "Darwin":  # macOS (including M1/M2)
+            return "videotoolbox"
+        elif "cuda" in hwaccels:  # NVIDIA GPU
+            return "cuda"
+        elif "qsv" in hwaccels:  # Intel Quick Sync
+            return "qsv"
+        elif "vaapi" in hwaccels:  # Linux VA-API
+            return "vaapi"
+        elif "dxva2" in hwaccels and system == "Windows":  # Windows
+            return "dxva2"
+        elif "d3d11va" in hwaccels and system == "Windows":  # Windows
+            return "d3d11va"
+        else:
+            return None
+    except:
+        return None
+
 def load_database(db_dir="sign_database", db_file="sign_data.json"):
     db_path = os.path.join(db_dir, db_file)
     if os.path.exists(db_path):
@@ -58,16 +92,65 @@ def GetValues(startTime, endTime, startPoint, endPoint, fileName, isOneHanded, a
     crop_dimensions = f'{width}:{height}:{x}:{y}'
     print(f"Crop dimensions: {crop_dimensions}")
 
+    # Get hardware acceleration option
+    hw_accel = get_hardware_acceleration_option()
+    print(f"Hardware acceleration: {hw_accel if hw_accel else 'Not available'}")
+
     try:
         print(f"Attempting to extract all frames from video...")
-        (
-            ffmpeg
-            .input(fileName)  # Use the entire file without time restrictions
-            .filter('fps', fps=30)  # Force 30fps output
-            .output(output_fileName, vsync=0)  # vsync=0 helps with problematic sources
-            .overwrite_output()
-            .run(quiet=True)
-        )
+        
+        # Base ffmpeg input
+        input_stream = ffmpeg.input(fileName)
+        
+        # Apply hardware acceleration if available
+        if hw_accel:
+            if hw_accel == "videotoolbox":  # For macOS including M1/M2
+                # Continuing from previous code
+                output_stream = (
+                    ffmpeg.input(fileName, hwaccel="videotoolbox")
+                    .filter('fps', fps=30)
+                    .output(output_fileName, vsync=0)
+                    .overwrite_output()
+                )
+                output_stream.run(quiet=True)
+            elif hw_accel == "cuda":  # For NVIDIA GPUs
+                (
+                    ffmpeg
+                    .input(fileName, hwaccel="cuda")
+                    .filter('fps', fps=30)
+                    .output(output_fileName, vsync=0)
+                    .overwrite_output()
+                    .run(quiet=True)
+                )
+            elif hw_accel == "qsv":  # For Intel Quick Sync
+                (
+                    ffmpeg
+                    .input(fileName, hwaccel="qsv")
+                    .filter('fps', fps=30)
+                    .output(output_fileName, vsync=0)
+                    .overwrite_output()
+                    .run(quiet=True)
+                )
+            elif hw_accel in ["vaapi", "dxva2", "d3d11va"]:  # Other acceleration methods
+                (
+                    ffmpeg
+                    .input(fileName, hwaccel=hw_accel)
+                    .filter('fps', fps=30)
+                    .output(output_fileName, vsync=0)
+                    .overwrite_output()
+                    .run(quiet=True)
+                )
+        else:
+            # Standard processing without hardware acceleration
+            # Try with higher thread count for better CPU utilization
+            (
+                ffmpeg
+                .input(fileName)
+                .filter('fps', fps=30)
+                .output(output_fileName, vsync=0, threads=8)  # Use more CPU threads
+                .overwrite_output()
+                .run(quiet=True)
+            )
         
         # Verify the transformed video has multiple frames
         check_cap = cv2.VideoCapture(output_fileName)
@@ -78,13 +161,22 @@ def GetValues(startTime, endTime, startPoint, endPoint, fileName, isOneHanded, a
         if check_frame_count <= 1:
             # Try alternative approach with different parameters
             print("First approach failed, trying alternate method...")
-            (
-                ffmpeg
-                .input(fileName)
-                .output(output_fileName, c='copy')  # Direct stream copy
-                .overwrite_output()
-                .run(quiet=True)
-            )
+            if hw_accel:
+                (
+                    ffmpeg
+                    .input(fileName, hwaccel=hw_accel)
+                    .output(output_fileName, c='copy')  # Direct stream copy with hardware accel
+                    .overwrite_output()
+                    .run(quiet=True)
+                )
+            else:
+                (
+                    ffmpeg
+                    .input(fileName)
+                    .output(output_fileName, c='copy', threads=8)  # More CPU threads
+                    .overwrite_output()
+                    .run(quiet=True)
+                )
             
             # Verify again
             check_cap = cv2.VideoCapture(output_fileName)
@@ -100,7 +192,7 @@ def GetValues(startTime, endTime, startPoint, endPoint, fileName, isOneHanded, a
             origin = (width/2, height/2)
             scaling_factor = 1.0/height
             videoDir = output_fileName
-
+            
         print(f"Face detection parameters - Origin: {origin}, Scaling: {scaling_factor}")
 
         (centroids_dom_arr,
