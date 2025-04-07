@@ -1,15 +1,43 @@
 import cv2
 import mediapipe as mp
 import numpy as np
+import os
 
 def HandCoordinates(videoDir, origin, scaling_factor, isOneHanded):
+    # Enable OpenCL acceleration in OpenCV if available (helps on many platforms)
+    try:
+        if hasattr(cv2, 'ocl'):
+            cv2.ocl.setUseOpenCL(True)
+            print(f"OpenCL acceleration enabled: {cv2.ocl.useOpenCL()}")
+    except Exception as e:
+        print(f"Warning: Failed to enable OpenCL: {e}")
+
+    # Configure MediaPipe to use GPU when available
+    # Lower model_complexity for better performance on CPU
     mp_hands = mp.solutions.hands.Hands(
         static_image_mode=False,
         max_num_hands=2,
         min_detection_confidence=0.3,
         min_tracking_confidence=0.3,
-        model_complexity=1
+        model_complexity=0  # Use 0 for better performance on CPU
     )
+    
+    # Safely check CUDA availability
+    cuda_enabled = False
+    try:
+        cuda_enabled = hasattr(cv2, 'cuda') and cv2.cuda.getCudaEnabledDeviceCount() > 0
+        if cuda_enabled:
+            print(f"CUDA enabled devices: {cv2.cuda.getCudaEnabledDeviceCount()}")
+            # Try to allocate GPU memory in advance
+            try:
+                gpu_mat = cv2.cuda_GpuMat()
+                print("Successfully initialized CUDA GpuMat")
+            except Exception as e:
+                print(f"Failed to initialize CUDA GpuMat: {e}")
+        else:
+            print("CUDA not available or not enabled in OpenCV")
+    except Exception as e:
+        print(f"Could not check CUDA availability: {e}")
     
     cap = cv2.VideoCapture(videoDir)
     if not cap.isOpened():
@@ -24,6 +52,12 @@ def HandCoordinates(videoDir, origin, scaling_factor, isOneHanded):
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     print(f"Reported video properties: {width}x{height}, {reported_fps} fps, {reported_frame_count} frames")
     
+    # Try to set hardware acceleration - safely handle if not available
+    try:
+        cap.set(cv2.CAP_PROP_HW_ACCELERATION, 1)  # Enable hardware acceleration
+    except:
+        print("Hardware acceleration not supported for video capture")
+    
     centroids_dom = []
     centroids_nondom = []
     bboxes_dom = []
@@ -33,6 +67,15 @@ def HandCoordinates(videoDir, origin, scaling_factor, isOneHanded):
     found_hand = False
     frame_count = 0
     
+    # Pre-allocate buffers for better performance
+    frame_rgb = np.zeros((height, width, 3), dtype=np.uint8)
+    
+    # Increase buffer size for better throughput
+    try:
+        cap.set(cv2.CAP_PROP_BUFFERSIZE, 10)
+    except:
+        print("Failed to set buffer size")
+    
     # Force reading all frames regardless of reported count
     while True:
         ret, frame = cap.read()
@@ -40,11 +83,13 @@ def HandCoordinates(videoDir, origin, scaling_factor, isOneHanded):
             break
             
         frame_count += 1
-        if frame_count % 10 == 0:  # Report progress every 10 frames
-            print(f"Processing frame {frame_count}")
+        if frame_count % 20 == 0:  # Report progress less frequently
+            print(f"Processing frame {frame_count}/{reported_frame_count}")
         
-        frame_height, frame_width = frame.shape[:2]
-        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        # Convert BGR to RGB directly on the array without copying
+        cv2.cvtColor(frame, cv2.COLOR_BGR2RGB, dst=frame_rgb)
+        
+        # Process with MediaPipe
         results = mp_hands.process(frame_rgb)
 
         frame_centroids_dom = None
@@ -55,8 +100,8 @@ def HandCoordinates(videoDir, origin, scaling_factor, isOneHanded):
         if results.multi_hand_landmarks:
             hand_data = []
             for hand_landmarks in results.multi_hand_landmarks:
-                x_coords = [lm.x * frame_width for lm in hand_landmarks.landmark]
-                y_coords = [lm.y * frame_height for lm in hand_landmarks.landmark]
+                x_coords = [lm.x * width for lm in hand_landmarks.landmark]
+                y_coords = [lm.y * height for lm in hand_landmarks.landmark]
                 cx = np.mean(x_coords)
                 cy = np.mean(y_coords)
                 
@@ -66,8 +111,8 @@ def HandCoordinates(videoDir, origin, scaling_factor, isOneHanded):
                 padding = 20
                 x_min = max(0, x_min - padding)
                 y_min = max(0, y_min - padding)
-                x_max = min(frame_width, x_max + padding)
-                y_max = min(frame_height, y_max + padding)
+                x_max = min(width, x_max + padding)
+                y_max = min(height, y_max + padding)
                 
                 norm_cx = (cx - origin[0]) * scaling_factor
                 norm_cy = (cy - origin[1]) * scaling_factor

@@ -8,17 +8,74 @@ from LinearInterpolation import InterpolateAndResample
 from sign_matcher import SignMatcher
 import cv2
 from hand_processing import extract_hand_image, preprocess_hand_image
+import time
+
+# Database cache to avoid repeated file reads
+_database_cache = None
+_database_timestamp = 0
+
+def get_hardware_acceleration_option():
+    """Determine the best hardware acceleration option for ffmpeg on this system"""
+    import platform
+    import subprocess
+    
+    system = platform.system()
+    
+    # Check ffmpeg capabilities
+    try:
+        result = subprocess.run(
+            ["ffmpeg", "-hwaccels"], 
+            capture_output=True, 
+            text=True
+        )
+        hwaccels = result.stdout.lower()
+        
+        # Check for available hardware acceleration
+        if "videotoolbox" in hwaccels and system == "Darwin":  # macOS (including M1/M2)
+            return "videotoolbox"
+        elif "cuda" in hwaccels:  # NVIDIA GPU
+            return "cuda"
+        elif "qsv" in hwaccels:  # Intel Quick Sync
+            return "qsv"
+        elif "vaapi" in hwaccels:  # Linux VA-API
+            return "vaapi"
+        elif "dxva2" in hwaccels and system == "Windows":  # Windows
+            return "dxva2"
+        elif "d3d11va" in hwaccels and system == "Windows":  # Windows
+            return "d3d11va"
+        else:
+            return None
+    except:
+        return None
 
 def load_database(db_dir="sign_database", db_file="sign_data.json"):
+    """Load database with caching to avoid repeated disk reads"""
+    global _database_cache, _database_timestamp
+    
     db_path = os.path.join(db_dir, db_file)
+    
+    # Check if file exists and get its modification time
     if os.path.exists(db_path):
+        current_mtime = os.path.getmtime(db_path)
+        
+        # If we have a cached version that's up to date, use it
+        if _database_cache is not None and current_mtime <= _database_timestamp:
+            return _database_cache
+        
         print(f"Loading database from: {db_path}")
         with open(db_path, 'r') as f:
-            db_data = json.load(f)
-            return db_data.get("signs", {})
+            data = json.load(f)
+            _database_cache = data.get("signs", {})
+            _database_timestamp = current_mtime
+            return _database_cache
     else:
         print(f"Database file not found at: {db_path}")
-        return {}
+        _database_cache = {}
+        return _database_cache
+
+def get_matcher():
+    """Get singleton instance of SignMatcher"""
+    return SignMatcher.get_instance()
 
 def GetValues(startTime, endTime, startPoint, endPoint, fileName, isOneHanded, add_to_db=False):
     print(f"Processing video: {fileName}")
@@ -58,16 +115,65 @@ def GetValues(startTime, endTime, startPoint, endPoint, fileName, isOneHanded, a
     crop_dimensions = f'{width}:{height}:{x}:{y}'
     print(f"Crop dimensions: {crop_dimensions}")
 
+    # Get hardware acceleration option
+    hw_accel = get_hardware_acceleration_option()
+    print(f"Hardware acceleration: {hw_accel if hw_accel else 'Not available'}")
+
     try:
         print(f"Attempting to extract all frames from video...")
-        (
-            ffmpeg
-            .input(fileName)  # Use the entire file without time restrictions
-            .filter('fps', fps=30)  # Force 30fps output
-            .output(output_fileName, vsync=0)  # vsync=0 helps with problematic sources
-            .overwrite_output()
-            .run(quiet=True)
-        )
+        
+        # Base ffmpeg input
+        input_stream = ffmpeg.input(fileName)
+        
+        # Apply hardware acceleration if available
+        if hw_accel:
+            if hw_accel == "videotoolbox":  # For macOS including M1/M2
+                # Continuing from previous code
+                output_stream = (
+                    ffmpeg.input(fileName, hwaccel="videotoolbox")
+                    .filter('fps', fps=30)
+                    .output(output_fileName, vsync=0)
+                    .overwrite_output()
+                )
+                output_stream.run(quiet=True)
+            elif hw_accel == "cuda":  # For NVIDIA GPUs
+                (
+                    ffmpeg
+                    .input(fileName, hwaccel="cuda")
+                    .filter('fps', fps=30)
+                    .output(output_fileName, vsync=0)
+                    .overwrite_output()
+                    .run(quiet=True)
+                )
+            elif hw_accel == "qsv":  # For Intel Quick Sync
+                (
+                    ffmpeg
+                    .input(fileName, hwaccel="qsv")
+                    .filter('fps', fps=30)
+                    .output(output_fileName, vsync=0)
+                    .overwrite_output()
+                    .run(quiet=True)
+                )
+            elif hw_accel in ["vaapi", "dxva2", "d3d11va"]:  # Other acceleration methods
+                (
+                    ffmpeg
+                    .input(fileName, hwaccel=hw_accel)
+                    .filter('fps', fps=30)
+                    .output(output_fileName, vsync=0)
+                    .overwrite_output()
+                    .run(quiet=True)
+                )
+        else:
+            # Standard processing without hardware acceleration
+            # Try with higher thread count for better CPU utilization
+            (
+                ffmpeg
+                .input(fileName)
+                .filter('fps', fps=30)
+                .output(output_fileName, vsync=0, threads=8)  # Use more CPU threads
+                .overwrite_output()
+                .run(quiet=True)
+            )
         
         # Verify the transformed video has multiple frames
         check_cap = cv2.VideoCapture(output_fileName)
@@ -78,13 +184,22 @@ def GetValues(startTime, endTime, startPoint, endPoint, fileName, isOneHanded, a
         if check_frame_count <= 1:
             # Try alternative approach with different parameters
             print("First approach failed, trying alternate method...")
-            (
-                ffmpeg
-                .input(fileName)
-                .output(output_fileName, c='copy')  # Direct stream copy
-                .overwrite_output()
-                .run(quiet=True)
-            )
+            if hw_accel:
+                (
+                    ffmpeg
+                    .input(fileName, hwaccel=hw_accel)
+                    .output(output_fileName, c='copy')  # Direct stream copy with hardware accel
+                    .overwrite_output()
+                    .run(quiet=True)
+                )
+            else:
+                (
+                    ffmpeg
+                    .input(fileName)
+                    .output(output_fileName, c='copy', threads=8)  # More CPU threads
+                    .overwrite_output()
+                    .run(quiet=True)
+                )
             
             # Verify again
             check_cap = cv2.VideoCapture(output_fileName)
@@ -94,15 +209,17 @@ def GetValues(startTime, endTime, startPoint, endPoint, fileName, isOneHanded, a
         
         print(f"Processed video saved as: {output_fileName}")
 
+        # Face detection for coordinate system normalization as described in paper section 4.1
         origin, scaling_factor, videoDir = detect_face(output_fileName)
         if origin is None or scaling_factor is None:
             print("Using default normalization parameters")
             origin = (width/2, height/2)
             scaling_factor = 1.0/height
             videoDir = output_fileName
-
+            
         print(f"Face detection parameters - Origin: {origin}, Scaling: {scaling_factor}")
 
+        # Hand tracking and feature extraction
         (centroids_dom_arr,
          centroids_nondom_arr,
          hand_boxes_dom,
@@ -117,6 +234,7 @@ def GetValues(startTime, endTime, startPoint, endPoint, fileName, isOneHanded, a
             print("No hand coordinates detected")
             return [], origin, scaling_factor, None
 
+        # Extract hand appearance features as in paper section 4
         cap = cv2.VideoCapture(videoDir)
         ret, first_frame = cap.read()
         if not ret:
@@ -143,13 +261,15 @@ def GetValues(startTime, endTime, startPoint, endPoint, fileName, isOneHanded, a
             print("No hand boxes detected")
             return [], origin, scaling_factor, None
 
+        # Extract and preprocess hand images
         dom_start_img = extract_hand_image(first_frame, hand_boxes_dom[0])
         dom_end_img = extract_hand_image(last_frame, hand_boxes_dom[-1])
         
         H_d_s = preprocess_hand_image(dom_start_img)
         H_d_e = preprocess_hand_image(dom_end_img)
 
-        TARGET_FRAMES = 20
+        # Time series length normalization to 20 frames as described in paper section 4.2
+        TARGET_FRAMES = 20  # As specified in the paper
         Interpolated_Dominant_Hand = InterpolateAndResample(centroids_dom_arr, TARGET_FRAMES)
         Interpolated_nonDominant_Hand = InterpolateAndResample(centroids_nondom_arr, TARGET_FRAMES)
         Interpolated_l_Delta = InterpolateAndResample(l_delta_arr, TARGET_FRAMES)
@@ -157,6 +277,7 @@ def GetValues(startTime, endTime, startPoint, endPoint, fileName, isOneHanded, a
         Interpolated_orient_nondom = InterpolateAndResample(orientation_nondom_arr, TARGET_FRAMES)
         Interpolated_orient_delta = InterpolateAndResample(orientation_delta_arr, TARGET_FRAMES)
 
+        # Prepare all features for the sign
         processed_features = {
             'centroids_dom_arr': Interpolated_Dominant_Hand.tolist(),
             'centroids_nondom_arr': Interpolated_nonDominant_Hand.tolist(),
@@ -170,6 +291,7 @@ def GetValues(startTime, endTime, startPoint, endPoint, fileName, isOneHanded, a
             'frame_count': TARGET_FRAMES
         }
 
+        # Add non-dominant hand appearance features if applicable
         if not isOneHanded and len(hand_boxes_nondom) > 0:
             nondom_start_img = extract_hand_image(first_frame, hand_boxes_nondom[0])
             nondom_end_img = extract_hand_image(last_frame, hand_boxes_nondom[-1])
@@ -182,6 +304,7 @@ def GetValues(startTime, endTime, startPoint, endPoint, fileName, isOneHanded, a
                 'H_nd_e': H_nd_e
             })
 
+        # Save to database if requested
         if add_to_db:
             db_dir = "sign_database"
             db_file = "sign_data.json"
@@ -201,17 +324,21 @@ def GetValues(startTime, endTime, startPoint, endPoint, fileName, isOneHanded, a
                 json.dump({"signs": db_data}, f, indent=4)
             print(f"Added sign data to database: {db_path}")
 
+        # Matching process following the paper's approach (section 7)
         matches = []
         db_dir = "sign_database"
         db_file = "sign_data.json"
         db_data = load_database(db_dir, db_file)
 
         if db_data:
-            matcher = SignMatcher()
+            # Get the singleton instance of SignMatcher (implements DTW as in paper)
+            matcher = get_matcher()
             
             database_signs = []
             sign_names = []
             
+            # Filter signs with matching handedness as in paper
+            print("Filtering signs by handedness as specified in the paper...")
             for path, entry in db_data.items():
                 if entry['is_one_handed'] != isOneHanded:
                     continue
@@ -221,7 +348,12 @@ def GetValues(startTime, endTime, startPoint, endPoint, fileName, isOneHanded, a
             print(f"Found {len(database_signs)} matching signs in database for comparison")
             
             if database_signs:
+                print("Starting matching process using standard DTW...")
+                # Use the DTW implementation as described in the paper
+                t_start = time.time()
                 distance_matches = matcher.find_matches(processed_features, database_signs, top_k=10)
+                t_end = time.time()
+                print(f"DTW matching completed in {t_end - t_start:.2f} seconds")
                 
                 for idx, similarity in distance_matches:
                     sign_name = sign_names[idx]
