@@ -1,101 +1,228 @@
 from py4j.java_gateway import JavaGateway
 import numpy as np
-from scipy.spatial.distance import euclidean
+import threading
+import traceback
+import time
+from concurrent.futures import ThreadPoolExecutor
 
 class SignMatcher:
+    _instance = None
+    _lock = threading.Lock()
+    
+    @classmethod
+    def get_instance(cls):
+        """Singleton pattern to ensure only one instance is created"""
+        if cls._instance is None:
+            with cls._lock:
+                if cls._instance is None:
+                    cls._instance = cls()
+        return cls._instance
+    
     def __init__(self):
+        # Create a single Java Gateway connection
+        print("Initializing Java DTW Gateway (this should happen only once)")
         self.gateway = JavaGateway()
         self.dtw_server = self.gateway.entry_point
         
-        self.f1 = 2.0 
-        self.f2 = 1.0  
-        self.f3 = 1.0  
-        self.f4 = 0.5  
-        self.f5 = 0.5 
-        self.f6 = 0.5  
+        # Feature weights as described in the paper
+        self.f1 = 2.0  # dominant hand centroids
+        self.f2 = 1.0  # non-dominant hand centroids
+        self.f3 = 1.0  # hand distance deltas
+        self.f4 = 0.5  # dominant hand orientation
+        self.f5 = 0.5  # non-dominant hand orientation
+        self.f6 = 0.5  # orientation delta
         
+        # Weight for hand appearance similarity
         self.f_hand = 1.0
+        
+        # Cache frequently used array converters
+        self._double_array_class = self.gateway.jvm.double
+        
+        # Number of worker threads for parallel processing
+        self.num_threads = max(6, threading.active_count() * 2)
+        
+        print(f"Initializing Sign Matcher with {self.num_threads} threads")
+        
+        # Thread local storage for per-thread Java gateways
+        self.thread_local = threading.local()
+    
+    def get_thread_gateway(self):
+        """Get or create a thread-local Java gateway"""
+        if not hasattr(self.thread_local, 'gateway'):
+            # Create a new gateway for this thread
+            self.thread_local.gateway = JavaGateway()
+            self.thread_local.dtw_server = self.thread_local.gateway.entry_point
+            self.thread_local.double_array_class = self.thread_local.gateway.jvm.double
+        return self.thread_local.gateway, self.thread_local.dtw_server, self.thread_local.double_array_class
 
-    def convert_for_java(self, sequence):
+    def convert_for_java(self, sequence, gateway=None, double_array_class=None):
+        """Convert numpy array or list to Java 2D array for DTW calculation"""
         if sequence is None or len(sequence) == 0:
             return None
         
+        # Use thread-local gateway if none provided
+        if gateway is None or double_array_class is None:
+            gateway, _, double_array_class = self.get_thread_gateway()
+        
+        # Convert list to numpy array if needed
         if isinstance(sequence, list):
             sequence = np.array(sequence, dtype=np.float32)
 
-        nrows, ncols = sequence.shape
-        Double2DArray = self.gateway.new_array(self.gateway.jvm.double, nrows, ncols)
+        # Create a contiguous copy for faster access
+        sequence = np.ascontiguousarray(sequence, dtype=np.float32)
         
+        # Create Java array with optimized bulk transfer
+        nrows, ncols = sequence.shape
+        Double2DArray = gateway.new_array(double_array_class, nrows, ncols)
+        
+        # Efficiently copy data - flatten inner loop for performance
         for i in range(nrows):
+            row = sequence[i]
             for j in range(ncols):
-                val = sequence[i][j]
-                if np.isnan(val):
-                    Double2DArray[i][j] = 0.0
-                else:
-                    Double2DArray[i][j] = float(val)
-                    
+                val = row[j]
+                Double2DArray[i][j] = 0.0 if np.isnan(val) else float(val)
+                        
         return Double2DArray
 
-    def compute_dtw_distance(self, Q, X):
-        try:
-            motion_distance = 0.0
-            feature_count = 0
-            
-            if 'centroids_dom_arr' in Q and 'centroids_dom_arr' in X:
-                q_dom = self.convert_for_java(Q['centroids_dom_arr'])
-                x_dom = self.convert_for_java(X['centroids_dom_arr'])
-                if q_dom is not None and x_dom is not None:
-                    dist = self.dtw_server.calculateDTW(q_dom, x_dom)
-                    motion_distance += self.f1 * dist
-                    feature_count += 1
-
-            if not Q.get('is_one_handed', True) and not X.get('is_one_handed', True):
-                if 'centroids_nondom_arr' in Q and 'centroids_nondom_arr' in X:
-                    q_nondom = self.convert_for_java(Q['centroids_nondom_arr'])
-                    x_nondom = self.convert_for_java(X['centroids_nondom_arr'])
-                    if q_nondom is not None and x_nondom is not None:
-                        dist = self.dtw_server.calculateDTW(q_nondom, x_nondom)
-                        motion_distance += self.f2 * dist
-                        feature_count += 1
-
-                if 'l_delta_arr' in Q and 'l_delta_arr' in X:
-                    q_delta = self.convert_for_java(Q['l_delta_arr'])
-                    x_delta = self.convert_for_java(X['l_delta_arr'])
-                    if q_delta is not None and x_delta is not None:
-                        dist = self.dtw_server.calculateDTW(q_delta, x_delta)
-                        motion_distance += self.f3 * dist
-                        feature_count += 1
-
-            if feature_count > 0:
-                motion_distance /= feature_count
-
-            return motion_distance
-
-        except Exception as e:
-            print(f"Error computing DTW distance: {str(e)}")
-            traceback.print_exc()
-            return float('inf')
-
-    def find_matches(self, query_sign, database_signs, top_k=10):
-        distances = []
+    def process_sign_batch(self, query_sign, db_signs_batch):
+        """Process a batch of signs using thread-local Java gateway"""
+        # Get thread-local gateway
+        gateway, dtw_server, double_array_class = self.get_thread_gateway()
         
-        for idx, db_sign in enumerate(database_signs):
+        results = []
+        
+        # Convert query features once for this batch
+        q_dom = None
+        q_nondom = None
+        q_delta = None
+        q_orient_dom = None
+        q_orient_nondom = None
+        q_orient_delta = None
+        
+        if 'centroids_dom_arr' in query_sign:
+            q_dom = self.convert_for_java(query_sign['centroids_dom_arr'], gateway, double_array_class)
+            
+        if not query_sign.get('is_one_handed', True):
+            if 'centroids_nondom_arr' in query_sign:
+                q_nondom = self.convert_for_java(query_sign['centroids_nondom_arr'], gateway, double_array_class)
+            if 'l_delta_arr' in query_sign:
+                q_delta = self.convert_for_java(query_sign['l_delta_arr'], gateway, double_array_class)
+            if 'orientation_dom_arr' in query_sign:
+                q_orient_dom = self.convert_for_java(query_sign['orientation_dom_arr'], gateway, double_array_class)
+            if 'orientation_nondom_arr' in query_sign:
+                q_orient_nondom = self.convert_for_java(query_sign['orientation_nondom_arr'], gateway, double_array_class)
+            if 'orientation_delta_arr' in query_sign:
+                q_orient_delta = self.convert_for_java(query_sign['orientation_delta_arr'], gateway, double_array_class)
+        
+        # Process each database sign in the batch
+        for idx, db_sign in db_signs_batch:
             try:
-                # Skip signs with different handedness
-                if query_sign.get('is_one_handed', True) != db_sign.get('is_one_handed', True):
-                    continue
-                    
-                # Calculate motion and hand distances
-                motion_dist = self.compute_dtw_distance(query_sign, db_sign)
-                hand_dist = self.compute_hand_distance(query_sign, db_sign)
+                # Calculate motion distance
+                motion_distance = 0.0
+                feature_count = 0
                 
-                # Combine distances using the hand weight factor
-                total_dist = motion_dist + self.f_hand * hand_dist
-                distances.append((idx, total_dist))
+                # Process dominant hand centroids
+                if q_dom is not None and 'centroids_dom_arr' in db_sign:
+                    x_dom = self.convert_for_java(db_sign['centroids_dom_arr'], gateway, double_array_class)
+                    if x_dom is not None:
+                        dist = dtw_server.calculateDTW(q_dom, x_dom)
+                        motion_distance += self.f1 * dist
+                        feature_count += 1
+                
+                # Process non-dominant hand features if both signs are two-handed
+                if not query_sign.get('is_one_handed', True) and not db_sign.get('is_one_handed', True):
+                    # Non-dominant hand centroids
+                    if q_nondom is not None and 'centroids_nondom_arr' in db_sign:
+                        x_nondom = self.convert_for_java(db_sign['centroids_nondom_arr'], gateway, double_array_class)
+                        if x_nondom is not None:
+                            dist = dtw_server.calculateDTW(q_nondom, x_nondom)
+                            motion_distance += self.f2 * dist
+                            feature_count += 1
+                    
+                    # Hand distance deltas
+                    if q_delta is not None and 'l_delta_arr' in db_sign:
+                        x_delta = self.convert_for_java(db_sign['l_delta_arr'], gateway, double_array_class)
+                        if x_delta is not None:
+                            dist = dtw_server.calculateDTW(q_delta, x_delta)
+                            motion_distance += self.f3 * dist
+                            feature_count += 1
+                    
+                    # Orientation features if available
+                    if q_orient_dom is not None and 'orientation_dom_arr' in db_sign:
+                        x_orient_dom = self.convert_for_java(db_sign['orientation_dom_arr'], gateway, double_array_class)
+                        if x_orient_dom is not None:
+                            dist = dtw_server.calculateDTW(q_orient_dom, x_orient_dom)
+                            motion_distance += self.f4 * dist
+                            feature_count += 1
+                    
+                    if q_orient_nondom is not None and 'orientation_nondom_arr' in db_sign:
+                        x_orient_nondom = self.convert_for_java(db_sign['orientation_nondom_arr'], gateway, double_array_class)
+                        if x_orient_nondom is not None:
+                            dist = dtw_server.calculateDTW(q_orient_nondom, x_orient_nondom)
+                            motion_distance += self.f5 * dist
+                            feature_count += 1
+                    
+                    if q_orient_delta is not None and 'orientation_delta_arr' in db_sign:
+                        x_orient_delta = self.convert_for_java(db_sign['orientation_delta_arr'], gateway, double_array_class)
+                        if x_orient_delta is not None:
+                            dist = dtw_server.calculateDTW(q_orient_delta, x_orient_delta)
+                            motion_distance += self.f6 * dist
+                            feature_count += 1
+                
+                # Calculate average motion distance
+                if feature_count > 0:
+                    motion_distance /= feature_count
+                
+                # Calculate hand appearance distance
+                hand_distance = self.compute_hand_distance(query_sign, db_sign)
+                
+                # Combine distances as in paper equation 12
+                total_distance = motion_distance + self.f_hand * hand_distance
+                
+                results.append((idx, total_distance))
                 
             except Exception as e:
                 print(f"Error comparing with sign {idx}: {str(e)}")
-                continue
+                traceback.print_exc()
+        
+        return results
+
+    def find_matches(self, query_sign, database_signs, top_k=10):
+        """Find top k matches for query sign using parallel processing with Java DTW"""
+        start_time = time.time()
+        
+        # Pre-filter compatible signs (same handedness)
+        compatible_signs = [
+            (idx, db_sign) for idx, db_sign in enumerate(database_signs)
+            if query_sign.get('is_one_handed', True) == db_sign.get('is_one_handed', True)
+        ]
+        
+        print(f"Comparing with {len(compatible_signs)} compatible signs using {self.num_threads} threads")
+        
+        # Split database into batches for parallel processing
+        batch_size = max(1, len(compatible_signs) // self.num_threads)
+        batches = [
+            compatible_signs[i:i + batch_size]
+            for i in range(0, len(compatible_signs), batch_size)
+        ]
+        
+        # Process batches in parallel
+        distances = []
+        with ThreadPoolExecutor(max_workers=self.num_threads) as executor:
+            # Submit all batch processing jobs
+            futures = [
+                executor.submit(self.process_sign_batch, query_sign, batch)
+                for batch in batches
+            ]
+            
+            # Collect results as they complete
+            for future in futures:
+                try:
+                    batch_results = future.result()
+                    distances.extend(batch_results)
+                except Exception as e:
+                    print(f"Error processing batch: {str(e)}")
+                    traceback.print_exc()
         
         if not distances:
             return []
@@ -119,80 +246,45 @@ class SignMatcher:
         
         # Sort by similarity (descending) and return top_k matches
         matches.sort(key=lambda x: x[1], reverse=True)
+        
+        time_taken = time.time() - start_time
+        print(f"Matching completed in {time_taken:.2f}s")
+        
         return matches[:top_k]
 
     def compute_hand_distance(self, Q, X):
+        """Compute Euclidean distance between hand appearance images as in paper section 6"""
         try:
-            Q_d_s = np.asarray(Q['H_d_s'], dtype=np.float32).ravel()
-            X_d_s = np.asarray(X['H_d_s'], dtype=np.float32).ravel()
-            Q_d_e = np.asarray(Q['H_d_e'], dtype=np.float32).ravel()
-            X_d_e = np.asarray(X['H_d_e'], dtype=np.float32).ravel()
+            # Per equation 11 in the paper - use Euclidean distance between hand images
+            total_distance = 0.0
             
-            d_start = np.linalg.norm(Q_d_s - X_d_s)
-            d_end = np.linalg.norm(Q_d_e - X_d_e)
+            # Dominant hand at start frame
+            if 'H_d_s' in Q and 'H_d_s' in X:
+                Q_d_s = np.asarray(Q['H_d_s'], dtype=np.float32).ravel()
+                X_d_s = np.asarray(X['H_d_s'], dtype=np.float32).ravel()
+                total_distance += np.linalg.norm(Q_d_s - X_d_s)
+                
+            # Dominant hand at end frame
+            if 'H_d_e' in Q and 'H_d_e' in X:
+                Q_d_e = np.asarray(Q['H_d_e'], dtype=np.float32).ravel()
+                X_d_e = np.asarray(X['H_d_e'], dtype=np.float32).ravel()
+                total_distance += np.linalg.norm(Q_d_e - X_d_e)
             
-            total_distance = d_start + d_end
-            
+            # Non-dominant hand if applicable
             if not Q.get('is_one_handed', True) and not X.get('is_one_handed', True):
-                if 'H_nd_s' in Q and 'H_nd_e' in Q and 'H_nd_s' in X and 'H_nd_e' in X:
+                if 'H_nd_s' in Q and 'H_nd_s' in X:
                     Q_nd_s = np.asarray(Q['H_nd_s'], dtype=np.float32).ravel()
                     X_nd_s = np.asarray(X['H_nd_s'], dtype=np.float32).ravel()
+                    total_distance += np.linalg.norm(Q_nd_s - X_nd_s)
+                    
+                if 'H_nd_e' in Q and 'H_nd_e' in X:
                     Q_nd_e = np.asarray(Q['H_nd_e'], dtype=np.float32).ravel()
                     X_nd_e = np.asarray(X['H_nd_e'], dtype=np.float32).ravel()
+                    total_distance += np.linalg.norm(Q_nd_e - X_nd_e)
                     
-                    nd_start = np.linalg.norm(Q_nd_s - X_nd_s)
-                    nd_end = np.linalg.norm(Q_nd_e - X_nd_e)
-                    total_distance += nd_start + nd_end
-            
             return total_distance
+            
         except Exception as e:
             print(f"Error computing hand distance: {str(e)}")
             traceback.print_exc()
-            return float('inf')
-
-    def compare_signs(self, Q, X):
-        try:
-            dtw_distance = 0.0
-            
-            if Q['centroids_dom_arr'] and X['centroids_dom_arr']:
-                q_dom = self.convert_for_java(Q['centroids_dom_arr'])
-                x_dom = self.convert_for_java(X['centroids_dom_arr'])
-                if q_dom is not None and x_dom is not None:
-                    dist = self.dtw_server.calculateDTW(q_dom, x_dom)
-                    dtw_distance += self.f1 * dist
-            
-            if not Q.get('is_one_handed', True) and 'centroids_nondom_arr' in Q:
-                q_nondom = self.convert_for_java(Q['centroids_nondom_arr'])
-                x_nondom = self.convert_for_java(X['centroids_nondom_arr'])
-                if q_nondom is not None and x_nondom is not None:
-                    dist = self.dtw_server.calculateDTW(q_nondom, x_nondom)
-                    dtw_distance += self.f2 * dist
-                
-                if Q['l_delta_arr'] and X['l_delta_arr']:
-                    q_delta = self.convert_for_java(Q['l_delta_arr'])
-                    x_delta = self.convert_for_java(X['l_delta_arr'])
-                    if q_delta is not None and x_delta is not None:
-                        dist = self.dtw_server.calculateDTW(q_delta, x_delta)
-                        dtw_distance += self.f3 * dist
-            
-            for feature, weight in [
-                ('orientation_dom_arr', self.f4),
-                ('orientation_nondom_arr', self.f5),
-                ('orientation_delta_arr', self.f6)
-            ]:
-                if feature in Q and feature in X:
-                    q_orient = self.convert_for_java(Q[feature])
-                    x_orient = self.convert_for_java(X[feature])
-                    if q_orient is not None and x_orient is not None:
-                        dist = self.dtw_server.calculateDTW(q_orient, x_orient)
-                        dtw_distance += weight * dist
-            
-            hand_distance = self.compute_hand_distance(Q, X)
-            
-            total_distance = dtw_distance + self.f_hand * hand_distance
-            
-            return total_distance
-            
-        except Exception as e:
-            print(f"Error comparing signs: {str(e)}")
             return float('inf')

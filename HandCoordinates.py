@@ -13,30 +13,31 @@ def HandCoordinates(videoDir, origin, scaling_factor, isOneHanded):
         print(f"Warning: Failed to enable OpenCL: {e}")
 
     # Configure MediaPipe to use GPU when available
-    # Higher model_complexity uses more resources but can be more accurate
+    # Lower model_complexity for better performance on CPU
     mp_hands = mp.solutions.hands.Hands(
         static_image_mode=False,
         max_num_hands=2,
         min_detection_confidence=0.3,
         min_tracking_confidence=0.3,
-        model_complexity=1  # Use 1 for balanced performance/resource usage
+        model_complexity=0  # Use 0 for better performance on CPU
     )
     
-    # Print CUDA availability for debugging
+    # Safely check CUDA availability
+    cuda_enabled = False
     try:
-        cuda_enabled = cv2.cuda.getCudaEnabledDeviceCount() > 0
-        print(f"CUDA enabled devices: {cv2.cuda.getCudaEnabledDeviceCount()}")
-    except:
-        cuda_enabled = False
-        print("CUDA not available in OpenCV")
-    
-    # Try to allocate GPU memory in advance
-    if cuda_enabled:
-        try:
-            gpu_mat = cv2.cuda_GpuMat()
-            print("Successfully initialized CUDA GpuMat")
-        except Exception as e:
-            print(f"Failed to initialize CUDA GpuMat: {e}")
+        cuda_enabled = hasattr(cv2, 'cuda') and cv2.cuda.getCudaEnabledDeviceCount() > 0
+        if cuda_enabled:
+            print(f"CUDA enabled devices: {cv2.cuda.getCudaEnabledDeviceCount()}")
+            # Try to allocate GPU memory in advance
+            try:
+                gpu_mat = cv2.cuda_GpuMat()
+                print("Successfully initialized CUDA GpuMat")
+            except Exception as e:
+                print(f"Failed to initialize CUDA GpuMat: {e}")
+        else:
+            print("CUDA not available or not enabled in OpenCV")
+    except Exception as e:
+        print(f"Could not check CUDA availability: {e}")
     
     cap = cv2.VideoCapture(videoDir)
     if not cap.isOpened():
@@ -51,8 +52,11 @@ def HandCoordinates(videoDir, origin, scaling_factor, isOneHanded):
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     print(f"Reported video properties: {width}x{height}, {reported_fps} fps, {reported_frame_count} frames")
     
-    # Set hardware-accelerated decoding when possible
-    # cap.set(cv2.CAP_PROP_HW_ACCELERATION, 1)  # Enable hardware acceleration
+    # Try to set hardware acceleration - safely handle if not available
+    try:
+        cap.set(cv2.CAP_PROP_HW_ACCELERATION, 1)  # Enable hardware acceleration
+    except:
+        print("Hardware acceleration not supported for video capture")
     
     centroids_dom = []
     centroids_nondom = []
@@ -67,7 +71,10 @@ def HandCoordinates(videoDir, origin, scaling_factor, isOneHanded):
     frame_rgb = np.zeros((height, width, 3), dtype=np.uint8)
     
     # Increase buffer size for better throughput
-    cap.set(cv2.CAP_PROP_BUFFERSIZE, 10)
+    try:
+        cap.set(cv2.CAP_PROP_BUFFERSIZE, 10)
+    except:
+        print("Failed to set buffer size")
     
     # Force reading all frames regardless of reported count
     while True:

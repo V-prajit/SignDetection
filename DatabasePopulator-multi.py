@@ -28,6 +28,14 @@ class DatabasePopulator:
         self.benchmark_data = {"processing_times": []}
         
         print(f"Initialized with {self.num_workers} worker processes")
+        
+        # Check OpenCL availability
+        try:
+            if hasattr(cv2, 'ocl'):
+                cv2.ocl.setUseOpenCL(True)
+                print(f"OpenCL acceleration enabled: {cv2.ocl.useOpenCL()}")
+        except Exception as e:
+            print(f"OpenCL acceleration not available: {e}")
 
     def _load_or_create_db(self):
         if os.path.exists(self.json_file):
@@ -264,14 +272,25 @@ class DatabasePopulator:
         try:
             # Process with ffmpeg
             if hw_accel:
-                (
-                    ffmpeg
-                    .input(video_path, hwaccel=hw_accel)
-                    .filter('fps', fps=30)
-                    .output(output_fileName, vsync=0)
-                    .overwrite_output()
-                    .run(quiet=True)
-                )
+                try:
+                    (
+                        ffmpeg
+                        .input(video_path, hwaccel=hw_accel)
+                        .filter('fps', fps=30)
+                        .output(output_fileName, vsync=0)
+                        .overwrite_output()
+                        .run(quiet=True)
+                    )
+                except Exception as hw_error:
+                    print(f"Hardware acceleration failed: {hw_error}. Falling back to CPU processing.")
+                    (
+                        ffmpeg
+                        .input(video_path)
+                        .filter('fps', fps=30)
+                        .output(output_fileName, vsync=0, threads=8)
+                        .overwrite_output()
+                        .run(quiet=True)
+                    )
             else:
                 (
                     ffmpeg
@@ -351,8 +370,8 @@ class DatabasePopulator:
                 'orientation_dom_arr': Interpolated_orient_dom.tolist(),
                 'orientation_nondom_arr': Interpolated_orient_nondom.tolist(),
                 'orientation_delta_arr': Interpolated_orient_delta.tolist(),
-                'H_d_s': H_d_s,
-                'H_d_e': H_d_e,
+                'H_d_s': H_d_s.tolist() if isinstance(H_d_s, np.ndarray) else H_d_s,
+                'H_d_e': H_d_e.tolist() if isinstance(H_d_e, np.ndarray) else H_d_e,
                 'is_one_handed': is_one_handed,
                 'frame_count': TARGET_FRAMES
             }
@@ -366,8 +385,8 @@ class DatabasePopulator:
                 H_nd_e = preprocess_hand_image(nondom_end_img)
                 
                 processed_features.update({
-                    'H_nd_s': H_nd_s,
-                    'H_nd_e': H_nd_e
+                    'H_nd_s': H_nd_s.tolist() if isinstance(H_nd_s, np.ndarray) else H_nd_s,
+                    'H_nd_e': H_nd_e.tolist() if isinstance(H_nd_e, np.ndarray) else H_nd_e
                 })
                 
             return processed_features, origin, scaling_factor, duration
@@ -376,3 +395,160 @@ class DatabasePopulator:
             print(f"Error in feature extraction: {str(e)}")
             traceback.print_exc()
             return None, None, None, None
+            
+    def process_videos(self, video_list_file):
+        """Process videos in parallel using worker processes"""
+        if not os.path.exists(video_list_file):
+            print(f"Error: Video list file not found: {video_list_file}")
+            return
+
+        with open(video_list_file, 'r') as f:
+            video_entries = f.readlines()
+            
+        # Filter out empty lines and comments
+        video_entries = [entry.strip() for entry in video_entries 
+                        if entry.strip() and not entry.strip().startswith('#')]
+            
+        if self.max_signs is not None:
+            print(f"Limiting processing to {self.max_signs} signs as requested")
+            video_entries = video_entries[:self.max_signs]
+        
+        total_videos = len(video_entries)
+        if total_videos == 0:
+            print("No videos found in list file.")
+            return
+            
+        print(f"Found {total_videos} videos in list file.")
+        
+        # Filter out videos already in database
+        to_process = []
+        for entry in video_entries:
+            parts = entry.strip().split(',')
+            if len(parts) > 0:
+                video_path = parts[0].strip()
+                if video_path in self.db_data["signs"]:
+                    print(f"Skipping video already in database: {video_path}")
+                else:
+                    to_process.append(entry)
+        
+        skipped_count = total_videos - len(to_process)
+        if len(to_process) == 0:
+            print("All videos are already in the database. Nothing to process.")
+            return
+            
+        print(f"Processing {len(to_process)} videos ({skipped_count} already in database)")
+        
+        # Process in batches
+        processed_count = 0
+        error_count = 0
+        overall_start_time = time.time()
+        
+        # Process videos in batches using ProcessPoolExecutor
+        for batch_start in range(0, len(to_process), self.batch_size):
+            batch_end = min(batch_start + self.batch_size, len(to_process))
+            batch = to_process[batch_start:batch_end]
+            
+            print(f"\n--- Processing batch {batch_start//self.batch_size + 1} ({len(batch)} videos) ---")
+            
+            batch_results = []
+            with ProcessPoolExecutor(max_workers=self.num_workers) as executor:
+                futures = {executor.submit(self._process_video, entry): entry for entry in batch}
+                
+                for future in as_completed(futures):
+                    entry = futures[future]
+                    try:
+                        result = future.result()
+                        if result["status"] == "processed":
+                            batch_results.append(result)
+                            processed_count += 1
+                            print(f"Successfully processed: {result['name']} ({processed_count}/{len(to_process)})")
+                        else:
+                            error_count += 1
+                            print(f"Error processing: {entry.strip()} - {result.get('reason', 'unknown error')}")
+                    except Exception as e:
+                        error_count += 1
+                        print(f"Exception in worker for {entry.strip()}: {str(e)}")
+            
+            # Update database with batch results
+            for result in batch_results:
+                self.db_data["signs"][result["path"]] = {
+                    "name": result["name"],
+                    "features": result["features"],
+                    "is_one_handed": result["is_one_handed"],
+                    "duration": result["duration"],
+                    "origin": result["origin"],
+                    "scaling_factor": result["scaling_factor"],
+                    "processing_time": result["processing_time"]
+                }
+                
+                self.benchmark_data["processing_times"].append({
+                    "sign_name": result["name"],
+                    "video_path": result["path"],
+                    "processing_time_seconds": result["processing_time"],
+                    "video_duration_ms": result["duration"]
+                })
+            
+            # Save after each batch
+            if batch_results:
+                self._save_db()
+        
+        overall_time = time.time() - overall_start_time
+        
+        self.benchmark_data["summary"] = {
+            "total_videos": total_videos,
+            "processed_count": processed_count,
+            "skipped_count": skipped_count,
+            "error_count": error_count,
+            "total_time_seconds": overall_time,
+            "average_time_per_video": overall_time / max(processed_count, 1)
+        }
+        
+        print("\n--- PROCESSING SUMMARY ---")
+        print(f"Total videos in list: {total_videos}")
+        print(f"Videos processed: {processed_count}")
+        print(f"Videos skipped (already in DB): {skipped_count}")
+        print(f"Errors: {error_count}")
+        print(f"Total processing time: {overall_time:.2f}s")
+        print(f"Average time per video: {overall_time / max(processed_count, 1):.2f}s")
+        
+        self._save_db()
+
+
+def main():
+    import argparse
+    
+    parser = argparse.ArgumentParser(description='Process sign language videos for database.')
+    parser.add_argument('--max_signs', type=int, help='Maximum number of signs to process')
+    parser.add_argument('--db_dir', type=str, default="sign_database",
+                      help='Directory to store database files')
+    parser.add_argument('--video_list', type=str, default="videos_to_add.txt",
+                      help='Path to video list file')
+    parser.add_argument('--no_json', action='store_true', 
+                      help='Disable JSON file creation (for release)')
+    parser.add_argument('--workers', type=int, default=None,
+                      help='Number of worker processes (default: CPU count - 1)')
+    parser.add_argument('--batch_size', type=int, default=5,
+                      help='Batch size for processing (default: 5)')
+    
+    args = parser.parse_args()
+    
+    populator = DatabasePopulator(
+        db_dir=args.db_dir,
+        json_backup=not args.no_json,
+        max_signs=args.max_signs,
+        num_workers=args.workers,
+        batch_size=args.batch_size
+    )
+    
+    print(f"Starting database population with settings:")
+    print(f"  Max signs: {args.max_signs if args.max_signs else 'All'}")
+    print(f"  Database directory: {args.db_dir}")
+    print(f"  JSON files: {'Disabled' if args.no_json else 'Enabled'}")
+    print(f"  Video list: {args.video_list}")
+    print(f"  Worker processes: {populator.num_workers}")
+    print(f"  Batch size: {args.batch_size}")
+    
+    populator.process_videos(args.video_list)
+
+if __name__ == "__main__":
+    main()

@@ -8,6 +8,11 @@ from LinearInterpolation import InterpolateAndResample
 from sign_matcher import SignMatcher
 import cv2
 from hand_processing import extract_hand_image, preprocess_hand_image
+import time
+
+# Database cache to avoid repeated file reads
+_database_cache = None
+_database_timestamp = 0
 
 def get_hardware_acceleration_option():
     """Determine the best hardware acceleration option for ffmpeg on this system"""
@@ -44,15 +49,33 @@ def get_hardware_acceleration_option():
         return None
 
 def load_database(db_dir="sign_database", db_file="sign_data.json"):
+    """Load database with caching to avoid repeated disk reads"""
+    global _database_cache, _database_timestamp
+    
     db_path = os.path.join(db_dir, db_file)
+    
+    # Check if file exists and get its modification time
     if os.path.exists(db_path):
+        current_mtime = os.path.getmtime(db_path)
+        
+        # If we have a cached version that's up to date, use it
+        if _database_cache is not None and current_mtime <= _database_timestamp:
+            return _database_cache
+        
         print(f"Loading database from: {db_path}")
         with open(db_path, 'r') as f:
-            db_data = json.load(f)
-            return db_data.get("signs", {})
+            data = json.load(f)
+            _database_cache = data.get("signs", {})
+            _database_timestamp = current_mtime
+            return _database_cache
     else:
         print(f"Database file not found at: {db_path}")
-        return {}
+        _database_cache = {}
+        return _database_cache
+
+def get_matcher():
+    """Get singleton instance of SignMatcher"""
+    return SignMatcher.get_instance()
 
 def GetValues(startTime, endTime, startPoint, endPoint, fileName, isOneHanded, add_to_db=False):
     print(f"Processing video: {fileName}")
@@ -186,6 +209,7 @@ def GetValues(startTime, endTime, startPoint, endPoint, fileName, isOneHanded, a
         
         print(f"Processed video saved as: {output_fileName}")
 
+        # Face detection for coordinate system normalization as described in paper section 4.1
         origin, scaling_factor, videoDir = detect_face(output_fileName)
         if origin is None or scaling_factor is None:
             print("Using default normalization parameters")
@@ -195,6 +219,7 @@ def GetValues(startTime, endTime, startPoint, endPoint, fileName, isOneHanded, a
             
         print(f"Face detection parameters - Origin: {origin}, Scaling: {scaling_factor}")
 
+        # Hand tracking and feature extraction
         (centroids_dom_arr,
          centroids_nondom_arr,
          hand_boxes_dom,
@@ -209,6 +234,7 @@ def GetValues(startTime, endTime, startPoint, endPoint, fileName, isOneHanded, a
             print("No hand coordinates detected")
             return [], origin, scaling_factor, None
 
+        # Extract hand appearance features as in paper section 4
         cap = cv2.VideoCapture(videoDir)
         ret, first_frame = cap.read()
         if not ret:
@@ -235,13 +261,15 @@ def GetValues(startTime, endTime, startPoint, endPoint, fileName, isOneHanded, a
             print("No hand boxes detected")
             return [], origin, scaling_factor, None
 
+        # Extract and preprocess hand images
         dom_start_img = extract_hand_image(first_frame, hand_boxes_dom[0])
         dom_end_img = extract_hand_image(last_frame, hand_boxes_dom[-1])
         
         H_d_s = preprocess_hand_image(dom_start_img)
         H_d_e = preprocess_hand_image(dom_end_img)
 
-        TARGET_FRAMES = 20
+        # Time series length normalization to 20 frames as described in paper section 4.2
+        TARGET_FRAMES = 20  # As specified in the paper
         Interpolated_Dominant_Hand = InterpolateAndResample(centroids_dom_arr, TARGET_FRAMES)
         Interpolated_nonDominant_Hand = InterpolateAndResample(centroids_nondom_arr, TARGET_FRAMES)
         Interpolated_l_Delta = InterpolateAndResample(l_delta_arr, TARGET_FRAMES)
@@ -249,6 +277,7 @@ def GetValues(startTime, endTime, startPoint, endPoint, fileName, isOneHanded, a
         Interpolated_orient_nondom = InterpolateAndResample(orientation_nondom_arr, TARGET_FRAMES)
         Interpolated_orient_delta = InterpolateAndResample(orientation_delta_arr, TARGET_FRAMES)
 
+        # Prepare all features for the sign
         processed_features = {
             'centroids_dom_arr': Interpolated_Dominant_Hand.tolist(),
             'centroids_nondom_arr': Interpolated_nonDominant_Hand.tolist(),
@@ -262,6 +291,7 @@ def GetValues(startTime, endTime, startPoint, endPoint, fileName, isOneHanded, a
             'frame_count': TARGET_FRAMES
         }
 
+        # Add non-dominant hand appearance features if applicable
         if not isOneHanded and len(hand_boxes_nondom) > 0:
             nondom_start_img = extract_hand_image(first_frame, hand_boxes_nondom[0])
             nondom_end_img = extract_hand_image(last_frame, hand_boxes_nondom[-1])
@@ -274,6 +304,7 @@ def GetValues(startTime, endTime, startPoint, endPoint, fileName, isOneHanded, a
                 'H_nd_e': H_nd_e
             })
 
+        # Save to database if requested
         if add_to_db:
             db_dir = "sign_database"
             db_file = "sign_data.json"
@@ -293,17 +324,21 @@ def GetValues(startTime, endTime, startPoint, endPoint, fileName, isOneHanded, a
                 json.dump({"signs": db_data}, f, indent=4)
             print(f"Added sign data to database: {db_path}")
 
+        # Matching process following the paper's approach (section 7)
         matches = []
         db_dir = "sign_database"
         db_file = "sign_data.json"
         db_data = load_database(db_dir, db_file)
 
         if db_data:
-            matcher = SignMatcher()
+            # Get the singleton instance of SignMatcher (implements DTW as in paper)
+            matcher = get_matcher()
             
             database_signs = []
             sign_names = []
             
+            # Filter signs with matching handedness as in paper
+            print("Filtering signs by handedness as specified in the paper...")
             for path, entry in db_data.items():
                 if entry['is_one_handed'] != isOneHanded:
                     continue
@@ -313,7 +348,12 @@ def GetValues(startTime, endTime, startPoint, endPoint, fileName, isOneHanded, a
             print(f"Found {len(database_signs)} matching signs in database for comparison")
             
             if database_signs:
+                print("Starting matching process using standard DTW...")
+                # Use the DTW implementation as described in the paper
+                t_start = time.time()
                 distance_matches = matcher.find_matches(processed_features, database_signs, top_k=10)
+                t_end = time.time()
+                print(f"DTW matching completed in {t_end - t_start:.2f} seconds")
                 
                 for idx, similarity in distance_matches:
                     sign_name = sign_names[idx]

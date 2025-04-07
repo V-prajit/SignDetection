@@ -13,3 +13,6 @@ random
 CLAUDE.md
 /Sign_video
 .DS_Store
+/vid_reader
+/sign_annotations
+/sign_database
