@@ -348,12 +348,14 @@ def GetValues(startTime, endTime, startPoint, endPoint, fileName, isOneHanded, a
             print(f"Found {len(database_signs)} matching signs in database for comparison")
             
             if database_signs:
-                print("Starting matching process using standard DTW...")
-                # Use the DTW implementation as described in the paper
+                print("Starting batch DTW matching process...")
                 t_start = time.time()
-                distance_matches = matcher.find_matches(processed_features, database_signs, top_k=10)
+                
+                # Use batch processing for much faster results
+                distance_matches = matcher.find_matches_batch(processed_features, database_signs, top_k=10)
+                
                 t_end = time.time()
-                print(f"DTW matching completed in {t_end - t_start:.2f} seconds")
+                print(f"DTW batch matching completed in {t_end - t_start:.2f} seconds")
                 
                 for idx, similarity in distance_matches:
                     sign_name = sign_names[idx]
