@@ -1,0 +1,5 @@
+clean :
+	rm -f vidReader.exe
+
+vidReader.exe : VidHeader.cpp read-frame.cpp main.cpp libz.a showErrMsgBox.cpp
+	g++ -I. VidHeader.cpp read-frame.cpp main.cpp libz.a showErrMsgBox.cpp -o vidReader.exe

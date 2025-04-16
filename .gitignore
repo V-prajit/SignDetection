@@ -4,15 +4,34 @@ venv/
 *.pyc
 *.mov
 *.mpg
-/vid_reader 3
 random
 *.class
 *.json
-*.txt
 .DS_Store
 CLAUDE.md
 /Sign_video
-.DS_Store
 /vid_reader
 /sign_annotations
 /sign_database
+*.o
+*.obj
+*.a
+*.lib
+*.dll
+*.exe
+*.mex*
+*.map
+*.pdb
+*.idb
+*.ilk
+*.asv
+zlib/zlib-1.2.3/contrib/**/[Tt]mp/
+zlib/zlib-1.2.3/contrib/**/x64/
+zlib/zlib-1.2.3/contrib/**/x86/
+zlib/zlib-1.2.3/contrib/masmx64/*.obj
+zlib/zlib-1.2.3/contrib/masmx86/*.obj
+zlib/zlib-1.2.3/minigzip # Example executable
+zlib/zlib-1.2.3/example # Example executable
+/New_Video_converter/visual-studio
+*.vid
+*.db
