@@ -252,6 +252,79 @@ class SignMatcher:
         
         return matches[:top_k]
 
+    # Add this method to the SignMatcher class in sign_matcher.py
+
+    def find_matches_batch(self, query_sign, database_signs, top_k=10):
+        """Find top k matches using batch processing for much faster results"""
+        start_time = time.time()
+        
+        # Filter compatible signs (same handedness)
+        compatible_signs = [
+            db_sign for db_sign in database_signs
+            if query_sign.get('is_one_handed', True) == db_sign.get('is_one_handed', True)
+        ]
+        
+        print(f"Comparing with {len(compatible_signs)} compatible signs using batch processing")
+        
+        # Extract dominant hand centroids (main feature)
+        query_centroids = None
+        if 'centroids_dom_arr' in query_sign:
+            query_centroids = np.array(query_sign['centroids_dom_arr'], dtype=np.float32)
+            query_centroids = np.ascontiguousarray(query_centroids)
+        else:
+            print("No dominant hand centroids found in query")
+            return []
+        
+        # Convert query to Java format once
+        java_query = self.convert_for_java(query_centroids)
+        
+        # Create a Java ArrayList to hold the database sequences
+        java_list = self.gateway.jvm.java.util.ArrayList()
+        
+        # Prepare all database sequences
+        for db_sign in compatible_signs:
+            if 'centroids_dom_arr' in db_sign:
+                centroids = np.array(db_sign['centroids_dom_arr'], dtype=np.float32)
+                centroids = np.ascontiguousarray(centroids)
+                java_centroids = self.convert_for_java(centroids)
+                java_list.add(java_centroids)
+            else:
+                # Use empty array as placeholder
+                empty = np.zeros((1, 2), dtype=np.float32)
+                java_list.add(self.convert_for_java(empty))
+        
+        # Call batch processing function
+        print(f"Processing {java_list.size()} sequences in a single batch")
+        
+        # Pass the Java ArrayList to the batch function
+        distances = self.dtw_server.batchCalculateDTW(java_query, java_list)
+        
+        # Process results
+        matches = []
+        for i, distance in enumerate(distances):
+            matches.append((i, distance))
+        
+        # Sort by distance (ascending)
+        matches.sort(key=lambda x: x[1])
+        
+        # Convert to similarity scores (0-100%)
+        result_matches = []
+        if matches:
+            min_dist = matches[0][1]
+            max_dist = matches[-1][1]
+            dist_range = max_dist - min_dist
+            
+            for idx, dist in matches[:top_k]:
+                if dist_range > 0:
+                    similarity = (1.0 - (dist - min_dist) / dist_range) * 100
+                else:
+                    similarity = 100.0
+                result_matches.append((idx, similarity))
+        
+        print(f"DTW batch processing completed in {time.time() - start_time:.2f} seconds")
+        
+        return result_matches
+
     def compute_hand_distance(self, Q, X):
         """Compute Euclidean distance between hand appearance images as in paper section 6"""
         try:
