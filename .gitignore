@@ -35,3 +35,4 @@ zlib/zlib-1.2.3/example # Example executable
 /New_Video_converter/visual-studio
 *.vid
 *.db
+videos_to_add.txt
