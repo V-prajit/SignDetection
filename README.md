@@ -18,15 +18,15 @@ It implements the method described in:
 
 - **GUI capture and annotation** (`app.py`, PyQt6): load a video, scrub to the start/end of the sign, draw a region of interest around the signing space, flag one- vs two-handed signs, and trigger recognition.
 - **Video preprocessing** (`VideoTrimAndCropping.py`): trims/crops the clip with ffmpeg, probing for available hardware acceleration (VideoToolbox on macOS, CUDA, Intel Quick Sync, VA-API, DXVA2/D3D11VA on Windows) and falling back to multi-threaded CPU encoding.
-- **Face-relative normalization** (`faceDetection.py`, dlib frontal face detector): the face position and size give the origin and scale used to normalize hand coordinates, per section 4.1 of the paper.
+- **Face-relative normalization** (`faceDetection.py`, dlib frontal face detector): the face position and size give the origin and scale used to normalize hand coordinates, mirroring the paper's normalization step.
 - **Hand tracking** (`HandCoordinates.py`, MediaPipe Hands): per-frame dominant/non-dominant hand centroids, bounding boxes, and motion orientation vectors, with hands sorted left/right by horizontal position.
-- **Feature extraction** (`LinearInterpolation.py`, `hand_processing.py`): trajectories are resampled to a fixed 20-frame length (paper section 4.2), and start/end hand crops are skin-masked, grayscale-normalized, and resized for appearance comparison (paper section 6).
-- **DTW matching** (`sign_matcher.py`, `DTW.java`, `FastDTW.java`, `DTWServer.java`): the Java side does the actual Dynamic Time Warping; Python drives it over Py4J. A weighted combination of motion-feature distances plus hand-appearance distance produces a single similarity score per candidate (paper eq. 12), normalized to a 0-100% scale.
+- **Feature extraction** (`LinearInterpolation.py`, `hand_processing.py`): trajectories are resampled to a fixed 20-frame length, and start/end hand crops are skin-masked, grayscale-normalized, and resized for appearance comparison, following the same general approach as the paper.
+- **DTW matching** (`sign_matcher.py`, `DTW.java`, `FastDTW.java`, `DTWServer.java`): the Java side does the actual Dynamic Time Warping; Python drives it over Py4J. A weighted combination of motion-feature distances plus hand-appearance distance produces a single similarity score per candidate, normalized to a 0-100% scale.
 - **Database population** (`DatabasePopulator.py`, single-process; `DatabasePopulator-multi.py`, multi-process via `ProcessPoolExecutor`): batch-process a directory of reference videos into `sign_database/sign_data.json`.
 - **Raw capture decoding** (`New_Video_converter/`, C++): a standalone tool (`vid_extractor`) for decoding the lab's proprietary Bayer-encoded, zlib-compressed `.vid` capture format into individual frames, ahead of any of the Python processing above.
-- **Algorithm comparison scripts** (`benchmark.py`, `compareSigns.py`, `rank.py`, `DTWNormal.py`, `FastDTW.py`): compare standard DTW vs. FastDTW, and Python vs. Java-via-Py4J, on synthetic motion patterns (`signPatterns.py` generates circle/wave/zigzag trajectories — not real sign data). Useful for sanity-checking the algorithm implementations and relative speed, not for accuracy claims.
+- **Algorithm comparison scripts** (`benchmark.py`, `compareSigns.py`, `rank.py`, `DTWNormal.py`, `FastDTW.py`): compare standard DTW vs. FastDTW, and Python vs. Java-via-Py4J, on synthetic motion patterns (`signPatterns.py` generates circle/wave/zigzag trajectories, not real sign data). Useful for sanity-checking the algorithm implementations and relative speed, not for accuracy claims.
 
-No accuracy, latency, or dataset-size numbers are checked into the repo (`benchmark_results.json` is git-ignored), so none are claimed here — see Known limitations.
+No accuracy, latency, or dataset-size numbers are checked into the repo (`benchmark_results.json` is git-ignored), so none are claimed here; see Known limitations.
 
 ## Architecture
 
@@ -34,14 +34,14 @@ No accuracy, latency, or dataset-size numbers are checked into the repo (`benchm
 
 ```mermaid
 flowchart TD
-    A["Raw lab capture: .vid files\n(Bayer-encoded, zlib-compressed frames)"] --> B["New_Video_converter/vid_extractor (C++)\nVidHeader + bayer.cpp + vendored zlib 1.2.3"]
+    A["Raw lab capture: .vid files<br>(Bayer-encoded, zlib-compressed frames)"] --> B["New_Video_converter/vid_extractor (C++)<br>VidHeader + bayer.cpp + vendored zlib 1.2.3"]
     B --> C["Decompressed frames (PPM)"]
     D["Directory of sign videos (.mpg/.mp4)"] --> E["generate_video_list.py"]
-    E --> F["videos_to_add.txt\n(path, sign name, handedness)"]
+    E --> F["videos_to_add.txt<br>(path, sign name, handedness)"]
     C -.-> D
-    F --> G["DatabasePopulator.py\nor DatabasePopulator-multi.py (ProcessPoolExecutor)"]
-    G --> H["VideoTrimAndCropping.GetValues()\nper video, add_to_db=True"]
-    H --> I["sign_database/sign_data.json\n(features + metadata per sign)"]
+    F --> G["DatabasePopulator.py<br>or DatabasePopulator-multi.py (ProcessPoolExecutor)"]
+    G --> H["VideoTrimAndCropping.GetValues()<br>per video, add_to_db=True"]
+    H --> I["sign_database/sign_data.json<br>(features + metadata per sign)"]
 ```
 
 The C++ `vid_extractor` path and the Python `generate_video_list.py` path both terminate in ordinary video files that `DatabasePopulator` consumes; the `.vid` decoder is a preparatory step for archival lab recordings, not something the Python pipeline calls directly.
@@ -50,15 +50,15 @@ The C++ `vid_extractor` path and the Python `generate_video_list.py` path both t
 
 ```mermaid
 flowchart TD
-    A["app.py (PyQt6 GUI)\nload video, set start/end time, draw ROI"] --> B["VideoTrimAndCropping.GetValues()"]
-    B --> C["ffmpeg trim + crop\n(hardware-accel probe, CPU fallback)"]
-    C --> D["faceDetection.detect_face (dlib)\n-> origin, scaling_factor"]
-    D --> E["HandCoordinates (MediaPipe Hands)\n-> per-frame centroids, bboxes, orientation"]
-    E --> F["LinearInterpolation.InterpolateAndResample\n-> fixed 20-frame trajectories"]
-    F --> G["hand_processing: extract + preprocess\nstart/end hand crops"]
+    A["app.py (PyQt6 GUI)<br>load video, set start/end time, draw ROI"] --> B["VideoTrimAndCropping.GetValues()"]
+    B --> C["ffmpeg trim + crop<br>(hardware-accel probe, CPU fallback)"]
+    C --> D["faceDetection.detect_face (dlib)<br>-> origin, scaling_factor"]
+    D --> E["HandCoordinates (MediaPipe Hands)<br>-> per-frame centroids, bboxes, orientation"]
+    E --> F["LinearInterpolation.InterpolateAndResample<br>-> fixed 20-frame trajectories"]
+    F --> G["hand_processing: extract + preprocess<br>start/end hand crops"]
     G --> H["SignMatcher.find_matches_batch()"]
-    H --> I["Py4J -> DTWServer.java -> DTW.calculateDTW\nper candidate sign in sign_database"]
-    I --> J["Similarity scores normalized 0-100%,\ntop-k ranked"]
+    H --> I["Py4J -> DTWServer.java -> DTW.calculateDTW<br>per candidate sign in sign_database"]
+    I --> J["Similarity scores normalized 0-100%,<br>top-k ranked"]
     J --> K["app.py results page"]
 ```
 
@@ -92,9 +92,9 @@ sequenceDiagram
 - **Batched RPC over per-comparison RPC.** `find_matches_batch` sends the whole candidate set to Java in one `batchCalculateDTW` call, which parallelizes the distance computations across a Java `ExecutorService` server-side, instead of paying a Py4J round trip per candidate sign.
 - **Face-relative normalization, not raw pixel coordinates.** Hand centroids are recentered on the detected face position and scaled by face size (dlib), so the same sign performed at different distances from the camera produces comparable trajectories.
 - **Fixed-length resampling.** Variable-length hand trajectories are linearly interpolated to a fixed 20 frames (`LinearInterpolation.py`) before DTW, matching the paper's normalization step.
-- **Motion + appearance, weighted.** The match score combines DTW distance over several motion features (dominant/non-dominant centroids, inter-hand distance, orientation vectors) with a separate hand-appearance distance (skin-masked, normalized start/end hand crops), using fixed weights mirroring the paper's equation 12.
-- **Best-effort hardware acceleration.** ffmpeg trimming probes for VideoToolbox/CUDA/QSV/VAAPI/DXVA2 and falls back to multi-threaded CPU encoding; MediaPipe runs at `model_complexity=0` for CPU-friendliness. None of this is benchmarked in-repo — treat it as a portability affordance, not a performance claim.
-- **A separate C++ tool for the lab's raw format.** `New_Video_converter/` decodes a legacy Bayer + zlib `.vid` capture format used for some of the lab's archival recordings. It is vendored with a full copy of zlib 1.2.3 (including Windows/Delphi/Ada bindings unrelated to this project) rather than a slim dependency — see Known limitations.
+- **Motion + appearance, weighted.** The match score combines DTW distance over several motion features (dominant/non-dominant centroids, inter-hand distance, orientation vectors) with a separate hand-appearance distance (skin-masked, normalized start/end hand crops), using fixed weights mirroring the paper's weighted-combination approach.
+- **Best-effort hardware acceleration.** ffmpeg trimming probes for VideoToolbox/CUDA/QSV/VAAPI/DXVA2 and falls back to multi-threaded CPU encoding; MediaPipe runs at `model_complexity=0` for CPU-friendliness. None of this is benchmarked in-repo; treat it as a portability affordance, not a performance claim.
+- **A separate C++ tool for the lab's raw format.** `New_Video_converter/` decodes a legacy Bayer + zlib `.vid` capture format used for some of the lab's archival recordings. It is vendored with a full copy of zlib 1.2.3 (including Windows/Delphi/Ada bindings unrelated to this project) rather than a slim dependency (see Known limitations).
 
 ## Setup
 
@@ -110,7 +110,7 @@ source venv/bin/activate   # Windows: venv\Scripts\activate
 pip install PyQt6 opencv-python numpy ffmpeg-python py4j mediapipe scipy dlib
 ```
 
-`dlib` is required (used by `faceDetection.py`) but has no pinned version or `requirements.txt` in the repo; install whatever wheel is available for your platform. There are no secrets or environment variables to configure — all paths (video files, `sign_database/`) are passed as CLI arguments or picked via the GUI file dialog.
+`dlib` is required (used by `faceDetection.py`) but has no pinned version or `requirements.txt` in the repo; install whatever wheel is available for your platform. There are no secrets or environment variables to configure; all paths (video files, `sign_database/`) are passed as CLI arguments or picked via the GUI file dialog.
 
 Optional, platform-specific acceleration:
 - NVIDIA: CUDA + a CUDA-enabled OpenCV build.
@@ -136,12 +136,12 @@ javac DTW.java FastDTW.java DTWServer.java
 ### Building the reference database
 
 ```bash
-python generate_video_list.py /path/to/videos --one-handed
+python generate_video_list.py /path/to/videos
 # review/edit the generated videos_to_add.txt
 
 python DatabasePopulator-multi.py --workers 4 --batch_size 10 --video_list videos_to_add.txt
 ```
-(`DatabasePopulator.py` is the single-process version of the same tool and does not accept `--workers`/`--batch_size`; use `-multi` for parallel population.)
+`generate_video_list.py` writes handedness as `true` for every row (there is no `--one-handed` flag); edit `videos_to_add.txt` by hand to mark one-handed signs correctly before populating the database. (`DatabasePopulator.py` is the single-process version of the same tool and does not accept `--workers`/`--batch_size`; use `-multi` for parallel population.)
 
 ### Algorithm comparison scripts
 
@@ -150,7 +150,7 @@ python benchmark.py   # standard DTW vs FastDTW vs Java-via-Py4J, on synthetic p
 python rank.py         # rank benchmark_results.json by a chosen metric
 python compareSigns.py # standard DTW vs FastDTW timing/distance comparison
 ```
-These compare implementations against each other on synthetic geometric patterns (`signPatterns.py`), not against real sign-language data — treat their output as implementation sanity checks, not accuracy results.
+These compare implementations against each other on synthetic geometric patterns (`signPatterns.py`), not against real sign-language data; treat their output as implementation sanity checks, not accuracy results.
 
 ## Testing
 
@@ -161,13 +161,13 @@ These compare implementations against each other on synthetic geometric patterns
 - **No bundled dataset or trained/tuned parameters.** The feature weights (`f1`..`f6`, `f_hand` in `sign_matcher.py`) are fixed constants mirroring the paper, not fit or validated against a database in this repo.
 - **No accuracy or latency numbers in-repo.** `benchmark_results.json` is git-ignored and not committed; there is nothing here to cite for match accuracy or processing speed.
 - **`video_manager.py` appears to be an orphaned utility.** It manages its own `video_database.json` and isn't imported by `app.py`, `DatabasePopulator.py`, or `DatabasePopulator-multi.py`, which use `database_manager.SignDatabase` and `sign_database/sign_data.json` directly. Needs owner confirmation on whether it's still in use.
-- **Vendored zlib 1.2.3 source tree.** `New_Video_converter/zlib/` includes a full copy of zlib 1.2.3 (~17 MB, including Windows/Ada/Pascal/Delphi bindings and build artifacts unrelated to this project) committed directly rather than pulled in as a slim dependency. This is also why GitHub reports "SWIG" as the repo's primary language — it's an artifact of this vendored tree's file extensions, not anything SWIG-related in the actual project.
+- **Vendored zlib 1.2.3 source tree.** `New_Video_converter/zlib/` includes a full copy of zlib 1.2.3 (~17 MB, including Windows/Ada/Pascal/Delphi bindings and build artifacts unrelated to this project) committed directly rather than pulled in as a slim dependency. This is also why GitHub reports "SWIG" as the repo's primary language: it's an artifact of this vendored tree's file extensions, not anything SWIG-related in the actual project.
 - **No `requirements.txt` / dependency pinning**, and no `LICENSE` file.
 - **Manual, GUI-driven workflow.** There's no headless/batch "evaluate against a labeled test set" mode; recognition is invoked one clip at a time through the PyQt6 GUI (or by calling `GetValues` directly).
 
 ## Personal contribution
 
-Solo project. All 26 commits (Feb 2024 - Apr 2025) are authored by Prajit Viswanadha, including the video capture/ROI GUI, face-relative normalization, MediaPipe-based hand tracking and feature extraction, the Java DTW/FastDTW implementation and the Py4J integration layer, the batch database populators, and the algorithm-comparison scripts. `New_Video_converter/` wraps the research group's pre-existing raw-capture format and a vendored zlib; the surrounding build/integration work is original.
+Solo project. All 26 commits (Jan 2024 - Apr 2025) are authored by Prajit Viswanadha, including the video capture/ROI GUI, face-relative normalization, MediaPipe-based hand tracking and feature extraction, the Java DTW/FastDTW implementation and the Py4J integration layer, the batch database populators, and the algorithm-comparison scripts. `New_Video_converter/` wraps the research group's pre-existing raw-capture format and a vendored zlib; the surrounding build/integration work is original.
 
 ## Attribution
 
